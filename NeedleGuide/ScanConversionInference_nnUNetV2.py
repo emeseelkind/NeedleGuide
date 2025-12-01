@@ -35,7 +35,6 @@ from scipy.spatial import Delaunay
 
 # nnUNet V2 imports
 try:
-    from nnunetv2.utilities.plans_handling.plans_handler import PlansManager
     from nnunetv2.utilities.get_network_from_plans import get_network_from_plans
     NNUNET_AVAILABLE = True
 except ImportError:
@@ -79,6 +78,12 @@ def load_nnunet_config(plans_path):
     config_2d = plans['configurations']['2d']
     patch_size = config_2d['patch_size']  # [512, 512]
     
+    # Extract architecture parameters
+    architecture = config_2d['architecture']
+    arch_class_name = architecture['network_class_name']
+    arch_kwargs = architecture['arch_kwargs']
+    arch_kwargs_req_import = architecture.get('_kw_requires_import', [])
+    
     # Extract normalization parameters
     norm_schemes = config_2d.get('normalization_schemes', [])
     if 'ZScoreNormalization' in norm_schemes:
@@ -96,18 +101,18 @@ def load_nnunet_config(plans_path):
         norm_mean = 0.0
         norm_std = 1.0
     
-    # Create PlansManager for model loading
-    plans_manager = PlansManager(str(plans_path))
-    
     # Create config dict compatible with existing code
     config = {
         'shape': [1, 1, patch_size[0], patch_size[1]],  # [batch, channels, height, width]
         'normalization_mean': norm_mean,
         'normalization_std': norm_std,
         'patch_size': patch_size,
-        'plans_manager': plans_manager,
         'plans': plans,
-        'configuration_name': '2d'
+        'configuration_name': '2d',
+        # Architecture parameters for get_network_from_plans
+        'arch_class_name': arch_class_name,
+        'arch_kwargs': arch_kwargs,
+        'arch_kwargs_req_import': arch_kwargs_req_import
     }
     
     logging.info(f"Loaded nnUNet config: patch_size={patch_size}, norm_mean={norm_mean:.2f}, norm_std={norm_std:.2f}")
@@ -181,15 +186,20 @@ def run_client(args):
         # Load nnUNet configuration
         logging.info("Loading nnUNet plans...")
         config = load_nnunet_config(args.nnunet_plans)
-        plans_manager = config['plans_manager']
-        configuration_name = config['configuration_name']
         
         # Get model architecture from plans
         logging.info("Creating model architecture from plans...")
+        # Determine output channels - typically 2 for binary segmentation (background + foreground)
+        # This can be overridden if needed, but 2 is standard for binary segmentation
+        output_channels = 2
+        
         model = get_network_from_plans(
-            plans_manager,
-            configuration_name=configuration_name,
-            num_input_channels=1,  # Single channel ultrasound
+            arch_class_name=config['arch_class_name'],
+            arch_kwargs=config['arch_kwargs'],
+            arch_kwargs_req_import=config['arch_kwargs_req_import'],
+            input_channels=1,  # Single channel ultrasound
+            output_channels=output_channels,
+            allow_init=True,
             deep_supervision=False
         )
         
