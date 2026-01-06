@@ -238,6 +238,45 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QLabel">
+        <property name="text">
+         <string>Segmentation Classes:</string>
+        </property>
+        <property name="font">
+         <font>
+          <weight>75</weight>
+          <bold>true</bold>
+         </font>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="showKidneyCheckBox">
+        <property name="text">
+         <string>Kidney (Class 1)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+        <property name="SlicerParameterName" stdset="0">
+         <string>showKidney</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QCheckBox" name="showCalyxCheckBox">
+        <property name="text">
+         <string>Calyx (Class 2)</string>
+        </property>
+        <property name="checked">
+         <bool>true</bool>
+        </property>
+        <property name="SlicerParameterName" stdset="0">
+         <string>showCalyx</string>
+        </property>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>

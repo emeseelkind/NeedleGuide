@@ -134,6 +134,8 @@ class NeedleGuideParameterNode:
     reconstructedVolume: vtkMRMLScalarVolumeNode
     opacityThreshold: Annotated[int, WithinRange(-100, 200)] = 60
     invertThreshold: bool = False
+    showKidney: bool = True
+    showCalyx: bool = True
 
 #
 # NeedleGuideWidget
@@ -198,6 +200,10 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Explicitly connect signal/slot
         self.ui.inPlaneCheckBox.connect('toggled(bool)', self.onInPlaneOverlayToggled)
         self.ui.outOfPlaneCheckBox.connect('toggled(bool)', self.onOutOfPlaneOverlayToggled)
+        
+        # Connect segmentation class visualization checkboxes
+        self.ui.showKidneyCheckBox.connect('toggled(bool)', self.onSegmentationClassToggled)
+        self.ui.showCalyxCheckBox.connect('toggled(bool)', self.onSegmentationClassToggled)
        
         # Add custom layout
         self.addCustomLayouts()
@@ -208,6 +214,12 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
+        
+        # Auto-assign hardcoded nodes (bypasses UI dropdowns)
+        self.autoAssignHardcodedNodes()
+        
+        # Hide node selector dropdowns from UI (they work in background)
+        self.hideNodeSelectors()
         
         # Collapse DataProbe widget
         mw = slicer.util.mainWindow()
@@ -265,6 +277,8 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Called each time the user opens this module."""
         # Make sure parameter node exists and observed
         self.initializeParameterNode()
+        # Re-assign hardcoded nodes to ensure they're always set correctly
+        self.autoAssignHardcodedNodes()
 
     def exit(self) -> None:
         """Called each time the user opens a different module."""
@@ -300,6 +314,102 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # so that when the scene is saved and reloaded, these settings are restored.
 
         self.setParameterNode(self.logic.getParameterNode())
+    
+    def autoAssignHardcodedNodes(self) -> None:
+        """
+        Automatically assign nodes by their hardcoded names, bypassing UI dropdowns.
+        This ensures nodes are always assigned without user selection.
+        """
+        if not hasattr(self, '_parameterNode') or not self._parameterNode:
+            return
+        
+        parameterNode = self._parameterNode
+        if not hasattr(self, 'logic') or not self.logic:
+            return
+        
+        logic = self.logic
+        
+        # Assign nodes by their hardcoded names
+        try:
+            inputVolume = slicer.util.getNode(logic.IMAGE_IMAGE)
+            if inputVolume:
+                parameterNode.inputVolume = inputVolume
+        except Exception as e:
+            logging.warning(f"Could not assign inputVolume: {e}")
+        
+        try:
+            predictionVolume = slicer.util.getNode(logic.PREDICTION)
+            if predictionVolume:
+                parameterNode.predictionVolume = predictionVolume
+        except Exception as e:
+            logging.warning(f"Could not assign predictionVolume: {e}")
+        
+        try:
+            referenceToRas = slicer.util.getNode(logic.REFERENCE_TO_RAS)
+            if referenceToRas:
+                parameterNode.referenceToRas = referenceToRas
+        except Exception as e:
+            logging.warning(f"Could not assign referenceToRas: {e}")
+        
+        try:
+            stylusToReference = slicer.util.getNode(logic.STYLUS_TO_REFERENCE)
+            if stylusToReference:
+                parameterNode.stylusToReference = stylusToReference
+        except Exception as e:
+            logging.warning(f"Could not assign stylusToReference: {e}")
+        
+        try:
+            reconstructorNode = slicer.util.getNode(logic.RECONSTRUCTOR_NODE)
+            if reconstructorNode:
+                parameterNode.reconstructorNode = reconstructorNode
+        except Exception as e:
+            logging.warning(f"Could not assign reconstructorNode: {e}")
+        
+        try:
+            needleGuideMarkups = slicer.util.getNode(logic.NEEDLE_GUIDE_MARKUP)
+            if needleGuideMarkups:
+                parameterNode.needleGuideMarkups = needleGuideMarkups
+        except Exception as e:
+            logging.warning(f"Could not assign needleGuideMarkups: {e}")
+    
+    def hideNodeSelectors(self) -> None:
+        """
+        Hide node selector dropdowns and their labels from the UI.
+        Nodes are now hardcoded and auto-assigned in the background.
+        """
+        if not hasattr(self, 'ui') or not self.ui:
+            return
+        
+        # Map of selector widget names to their label widget names
+        # These will be completely hidden from the UI
+        selectorsToHide = {
+            'inputSelector': 'label',                    # Ultrasound image
+            'referenceToRasComboBox': 'label_4',        # ReferenceToRas transform
+            'stylusToReferenceComboBox': 'label_12',     # StylusToReference transform
+            'predictionVolumeComboBox': 'label_6',       # Prediction image
+            'reconstructorNodeComboBox': 'label_7',      # Reconstructor node
+            'needleGuideMarkupsComboxBox': 'label_11',   # Needle guide markup
+        }
+        
+        # Hide both the selector and its label
+        for selectorName, labelName in selectorsToHide.items():
+            try:
+                # Hide the selector widget
+                if hasattr(self.ui, selectorName):
+                    selector = getattr(self.ui, selectorName)
+                    if selector:
+                        selector.setVisible(False)
+                        selector.hide()
+                        selector.setEnabled(False)
+                
+                # Hide the label widget
+                if hasattr(self.ui, labelName):
+                    label = getattr(self.ui, labelName)
+                    if label:
+                        label.setVisible(False)
+                        label.hide()
+            except Exception as e:
+                logging.warning(f"Could not hide {selectorName}: {e}")
         
     def setParameterNode(self, inputParameterNode: Optional[NeedleGuideParameterNode]) -> None:
         """
@@ -354,7 +464,7 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             self.ui.applyButton.toolTip = _("Select input nodes to enable volume reconstruction")
             self.ui.applyButton.enabled = False
         
-        # Update opacity threshold slider
+        # Update opacity threshold slider and segmentation visualization
         vrLogic = slicer.modules.volumerendering.logic()
         if self._parameterNode and self._parameterNode.reconstructedVolume:
             self.ui.volumeOpacitySlider.enabled = True
@@ -367,6 +477,14 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             currentDisplayNode = vrLogic.GetFirstVolumeRenderingDisplayNode(self.displayedReconstructedVolume)
             if currentDisplayNode:
                 currentDisplayNode.SetVisibility(True)
+            
+            # Update segmentation class visualization when parameter node changes
+            if hasattr(self._parameterNode, 'showKidney'):
+                self.logic.updateSegmentationClassVisualization(
+                    self._parameterNode.reconstructedVolume,
+                    self._parameterNode.showKidney,
+                    self._parameterNode.showCalyx
+                )
         else:
             self.ui.volumeOpacitySlider.enabled = False
 
@@ -463,6 +581,15 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onOutOfPlaneOverlayToggled(self, checked):
         print(f"In-plane overlay toggled: {checked}")
+    
+    def onSegmentationClassToggled(self, checked):
+        """Update volume rendering when segmentation class visibility is toggled."""
+        if self._parameterNode and self._parameterNode.reconstructedVolume:
+            self.logic.updateSegmentationClassVisualization(
+                self._parameterNode.reconstructedVolume,
+                self._parameterNode.showKidney,
+                self._parameterNode.showCalyx
+            )
         
 #
 # NeedleGuideLogic
@@ -627,7 +754,16 @@ class NeedleGuideLogic(ScriptedLoadableModuleLogic):
         reconstructionLogic = slicer.modules.volumereconstruction.logic()
         reconstructionLogic.StartLiveVolumeReconstruction(parameterNode.reconstructorNode)
         outputVolume = parameterNode.reconstructorNode.GetOutputVolumeNode()
-        self.setVolumeRenderingProperty(outputVolume, window=200, level=(255-parameterNode.opacityThreshold))
+        # Use segmentation class visualization if it's a segmentation volume
+        # Otherwise use standard volume rendering
+        if parameterNode.showKidney or parameterNode.showCalyx:
+            self.updateSegmentationClassVisualization(
+                outputVolume,
+                parameterNode.showKidney,
+                parameterNode.showCalyx
+            )
+        else:
+            self.setVolumeRenderingProperty(outputVolume, window=200, level=(255-parameterNode.opacityThreshold))
         parameterNode.reconstructedVolume = outputVolume
     
     def stopVolumeReconstruction(self):
@@ -672,7 +808,64 @@ class NeedleGuideLogic(ScriptedLoadableModuleLogic):
         volumeProperty.SetColor(colorTransferFunction)
         volumeProperty.SetScalarOpacity(opacityTransferFunction)
         volumeProperty.ShadeOn()
-        volumeProperty.SetInterpolationTypeToLinear()    
+        volumeProperty.SetInterpolationTypeToLinear()
+    
+    def updateSegmentationClassVisualization(self, volumeNode, showKidney=True, showCalyx=True):
+        """
+        Update volume rendering to show selected segmentation classes with different colors.
+        
+        Classes:
+        - 0: Background (always transparent)
+        - 1: Kidney (red/brown)
+        - 2: Calyx (blue/cyan)
+        """
+        if not volumeNode:
+            return
+        
+        volumeRenderingLogic = slicer.modules.volumerendering.logic()
+        volumeRenderingDisplayNode = volumeRenderingLogic.GetFirstVolumeRenderingDisplayNode(volumeNode)
+        if not volumeRenderingDisplayNode:
+            volumeRenderingDisplayNode = volumeRenderingLogic.CreateDefaultVolumeRenderingNodes(volumeNode)
+        
+        # Create color transfer function for segmentation classes
+        colorTransferFunction = vtk.vtkColorTransferFunction()
+        
+        # Create opacity transfer function
+        opacityTransferFunction = vtk.vtkPiecewiseFunction()
+        
+        # Class 0: Background - Always transparent (never shown)
+        colorTransferFunction.AddRGBPoint(0, 0.0, 0.0, 0.0)  # Black
+        opacityTransferFunction.AddPoint(0, 0.0)  # Fully transparent
+        
+        # Class 1: Kidney - Red/Brown
+        if showKidney:
+            colorTransferFunction.AddRGBPoint(1, 0.8, 0.2, 0.2)  # Red
+            opacityTransferFunction.AddPoint(1, 0.8)  # Mostly opaque
+        else:
+            colorTransferFunction.AddRGBPoint(1, 0.0, 0.0, 0.0)  # Black
+            opacityTransferFunction.AddPoint(1, 0.0)  # Fully transparent
+        
+        # Class 2: Calyx - Blue/Cyan
+        if showCalyx:
+            colorTransferFunction.AddRGBPoint(2, 0.2, 0.6, 0.9)  # Cyan/Blue
+            opacityTransferFunction.AddPoint(2, 0.9)  # Mostly opaque
+        else:
+            colorTransferFunction.AddRGBPoint(2, 0.0, 0.0, 0.0)  # Black
+            opacityTransferFunction.AddPoint(2, 0.0)  # Fully transparent
+        
+        # Set smooth transitions between classes
+        colorTransferFunction.AddRGBPoint(0.5, 0.4, 0.4, 0.4)  # Transition between 0 and 1
+        colorTransferFunction.AddRGBPoint(1.5, 0.5, 0.4, 0.5)  # Transition between 1 and 2
+        
+        # Apply to volume property
+        volumeProperty = volumeRenderingDisplayNode.GetVolumePropertyNode().GetVolumeProperty()
+        volumeProperty.SetColor(colorTransferFunction)
+        volumeProperty.SetScalarOpacity(opacityTransferFunction)
+        volumeProperty.ShadeOn()
+        volumeProperty.SetInterpolationTypeToLinear()
+        
+        # Ensure visibility is on
+        volumeRenderingDisplayNode.SetVisibility(True)
     
     def resetReferenceToRasBasedOnImage(self):
         """
