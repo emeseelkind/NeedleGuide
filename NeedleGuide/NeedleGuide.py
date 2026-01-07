@@ -121,8 +121,8 @@ class NeedleGuideParameterNode:
     inputVolume: vtkMRMLScalarVolumeNode
     referenceToRas: vtkMRMLLinearTransformNode
     imageToReference: vtkMRMLLinearTransformNode
-    stylusToReference: vtkMRMLLinearTransformNode
-    stylusTipToStylus: vtkMRMLLinearTransformNode
+    needleToReference: vtkMRMLLinearTransformNode
+    needleTipToneedle: vtkMRMLLinearTransformNode
     needleModel: vtkMRMLModelNode
     predictionToReference: vtkMRMLLinearTransformNode
     predictionVolume: vtkMRMLScalarVolumeNode
@@ -352,11 +352,11 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             logging.warning(f"Could not assign referenceToRas: {e}")
         
         try:
-            stylusToReference = slicer.util.getNode(logic.STYLUS_TO_REFERENCE)
-            if stylusToReference:
-                parameterNode.stylusToReference = stylusToReference
+            needleToReference = slicer.util.getNode(logic.NEEDLE_TO_REFERENCE)
+            if needleToReference:
+                parameterNode.needleToReference = needleToReference
         except Exception as e:
-            logging.warning(f"Could not assign stylusToReference: {e}")
+            logging.warning(f"Could not assign needleToReference: {e}")
         
         try:
             reconstructorNode = slicer.util.getNode(logic.RECONSTRUCTOR_NODE)
@@ -385,7 +385,7 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         selectorsToHide = {
             'inputSelector': 'label',                    # Ultrasound image
             'referenceToRasComboBox': 'label_4',        # ReferenceToRas transform
-            'stylusToReferenceComboBox': 'label_12',     # StylusToReference transform
+            'needleToReferenceComboBox': 'label_12',     # needleToReference transform
             'predictionVolumeComboBox': 'label_6',       # Prediction image
             'reconstructorNodeComboBox': 'label_7',      # Reconstructor node
             'needleGuideMarkupsComboxBox': 'label_11',   # Needle guide markup
@@ -488,16 +488,16 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         else:
             self.ui.volumeOpacitySlider.enabled = False
 
-        # Set and observe StylusToReference transform
+        # Set and observe needleToReference transform
         if self.observedNeedleGuideMarkups != self._parameterNode.needleGuideMarkups:
             if self.observedNeedleGuideMarkups:
-                self.removeObserver(self.observedNeedleGuideMarkups, vtkMRMLMarkupsFiducialNode.TransformModifiedEvent, self._onStylusToReferenceModified)
+                self.removeObserver(self.observedNeedleGuideMarkups, vtkMRMLMarkupsFiducialNode.TransformModifiedEvent, self._onneedleToReferenceModified)
             self.observedNeedleGuideMarkups = self._parameterNode.needleGuideMarkups
             if self.observedNeedleGuideMarkups:
-                self.addObserver(self.observedNeedleGuideMarkups, vtkMRMLMarkupsFiducialNode.TransformModifiedEvent, self._onStylusToReferenceModified)
-            self._onStylusToReferenceModified()
+                self.addObserver(self.observedNeedleGuideMarkups, vtkMRMLMarkupsFiducialNode.TransformModifiedEvent, self._onneedleToReferenceModified)
+            self._onneedleToReferenceModified()
         
-    def _onStylusToReferenceModified(self, caller=None, event=None) -> None:
+    def _onneedleToReferenceModified(self, caller=None, event=None) -> None:
         # Distance calculation removed - target points feature has been removed
         pass
     
@@ -610,8 +610,8 @@ class NeedleGuideLogic(ScriptedLoadableModuleLogic):
     REFERENCE_TO_RAS = "ReferenceToRas"
     IMAGE_TO_REFERENCE = "ImageToReference"
     PREDICTION_TO_REFERENCE = "PredToReference"
-    STYLUS_TO_REFERENCE = "StylusToReference"
-    STYLUS_TIP_TO_STYLUS = "StylusTipToStylus"
+    NEEDLE_TO_REFERENCE = "NeedleToReference"
+    NEEDLE_TIP_TO_NEEDLE = "NeedleTipToNeedle"
 
     # volume names
     IMAGE_IMAGE = "Image_Image"
@@ -676,16 +676,16 @@ class NeedleGuideLogic(ScriptedLoadableModuleLogic):
             predictionVolume.SetAndObserveTransformNodeID(parameterNode.predictionToReference.GetID())
             parameterNode.predictionVolume = predictionVolume
 
-        if not parameterNode.stylusToReference:
-            stylusToReference = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.STYLUS_TO_REFERENCE)
-            stylusToReference.SetAndObserveTransformNodeID(parameterNode.referenceToRas.GetID())
-            parameterNode.stylusToReference = stylusToReference
+        if not parameterNode.needleToReference:
+            needleToReference = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.NEEDLE_TO_REFERENCE)
+            needleToReference.SetAndObserveTransformNodeID(parameterNode.referenceToRas.GetID())
+            parameterNode.needleToReference = needleToReference
 
-        if not parameterNode.stylusTipToStylus:
-            stylusTipToStylus = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.STYLUS_TIP_TO_STYLUS)
-            stylusTipToStylus.SetAndObserveTransformNodeID(parameterNode.stylusToReference.GetID())
-            # TODO: update with actual stylus tip to stylus transform, probably best to save as a .h5 file
-            parameterNode.stylusTipToStylus = stylusTipToStylus
+        if not parameterNode.needleTipToneedle:
+            needleTipToneedle = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.NEEDLE_TIP_TO_NEEDLE)
+            needleTipToneedle.SetAndObserveTransformNodeID(parameterNode.needleToReference.GetID())
+            # TODO: update with actual needle tip to needle transform, probably best to save as a .h5 file
+            parameterNode.needleTipToneedle = needleTipToneedle
         
         if not parameterNode.needleModel:
             createModelsLogic = slicer.modules.createmodels.logic()
@@ -693,7 +693,7 @@ class NeedleGuideLogic(ScriptedLoadableModuleLogic):
             needleModel.GetDisplayNode().SetColor(0.33, 1.0, 1.0)
             needleModel.SetName(self.NEEDLE_MODEL)
             needleModel.GetDisplayNode().Visibility2DOn()
-            needleModel.SetAndObserveTransformNodeID(parameterNode.stylusTipToStylus.GetID())
+            needleModel.SetAndObserveTransformNodeID(parameterNode.needleTipToneedle.GetID())
             parameterNode.needleModel = needleModel
 
         if not parameterNode.reconstructedVolume:
