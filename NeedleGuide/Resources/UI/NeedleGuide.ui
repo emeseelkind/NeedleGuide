@@ -11,6 +11,7 @@
    </rect>
   </property>
   <layout class="QVBoxLayout" name="verticalLayout_2">
+<<<<<<< HEAD
    <item>
     <widget class="ctkCollapsibleButton" name="inputsCollapsibleButton">
      <property name="text">
@@ -219,6 +220,9 @@
     </widget>
    </item>
    <item>
+=======
+   <item alignment="Qt::AlignTop">
+>>>>>>> 59036c2 (changes ui layout)
     <widget class="ctkCollapsibleButton" name="overlaysCollapsibleButton">
      <property name="text">
       <string>Visualization Overlays</string>
@@ -235,45 +239,6 @@
        <widget class="QCheckBox" name="outOfPlaneCheckBox">
         <property name="text">
          <string>Out-of-plane overlay</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QLabel">
-        <property name="text">
-         <string>Segmentation Classes:</string>
-        </property>
-        <property name="font">
-         <font>
-          <weight>75</weight>
-          <bold>true</bold>
-         </font>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QCheckBox" name="showKidneyCheckBox">
-        <property name="text">
-         <string>Kidney (Class 1)</string>
-        </property>
-        <property name="checked">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>showKidney</string>
-        </property>
-       </widget>
-      </item>
-      <item>
-       <widget class="QCheckBox" name="showCalyxCheckBox">
-        <property name="text">
-         <string>Calyx (Class 2)</string>
-        </property>
-        <property name="checked">
-         <bool>true</bool>
-        </property>
-        <property name="SlicerParameterName" stdset="0">
-         <string>showCalyx</string>
         </property>
        </widget>
       </item>
@@ -356,6 +321,64 @@
        </widget>
       </item>
       <item>
+       <widget class="QLabel" name="segmentationClassesLabel">
+        <property name="font">
+         <font>
+          <weight>75</weight>
+          <bold>true</bold>
+         </font>
+        </property>
+        <property name="text">
+         <string>Segmentation Classes:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QWidget" name="segmentationClassesWidget" native="true">
+        <layout class="QHBoxLayout" name="horizontalLayout">
+         <item>
+          <widget class="QCheckBox" name="showKidneyCheckBox">
+           <property name="text">
+            <string>Kidney (Class 1)</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+           <property name="SlicerParameterName" stdset="0">
+            <string>showKidney</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QCheckBox" name="showCalyxCheckBox">
+           <property name="text">
+            <string>Calyx (Class 2)</string>
+           </property>
+           <property name="checked">
+            <bool>true</bool>
+           </property>
+           <property name="SlicerParameterName" stdset="0">
+            <string>showCalyx</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <spacer name="horizontalSpacer">
+           <property name="orientation">
+            <enum>Qt::Horizontal</enum>
+           </property>
+           <property name="sizeHint" stdset="0">
+            <size>
+             <width>40</width>
+             <height>20</height>
+            </size>
+           </property>
+          </spacer>
+         </item>
+        </layout>
+       </widget>
+      </item>
+      <item>
        <widget class="QPushButton" name="startOpenIGTLinkButton">
         <property name="text">
          <string>Start OpenIGTLink connection</string>
@@ -426,7 +449,7 @@
         </property>
        </widget>
       </item>
-      <item row="1" column="1">
+      <item row="0" column="1">
        <widget class="ctkSliderWidget" name="imageThresholdSliderWidget">
         <property name="toolTip">
          <string>Set threshold value for computing the output image. Voxels that have intensities lower than this value will set to zero.</string>
@@ -450,6 +473,22 @@
       </item>
      </layout>
     </widget>
+   </item>
+   <item>
+    <spacer name="verticalSpacer">
+        <property name="orientation">
+        <enum>Qt::Vertical</enum>
+        </property>
+        <property name="sizeType">
+        <enum>QSizePolicy::Expanding</enum>
+        </property>
+        <property name="sizeHint" stdset="0">
+        <size>
+            <width>20</width>
+            <height>40</height>
+        </size>
+        </property>
+    </spacer>
    </item>
   </layout>
  </widget>
@@ -482,22 +521,6 @@
   <connection>
    <sender>NeedleGuide</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
-   <receiver>inputSelector</receiver>
-   <slot>setMRMLScene(vtkMRMLScene*)</slot>
-   <hints>
-    <hint type="sourcelabel">
-     <x>122</x>
-     <y>132</y>
-    </hint>
-    <hint type="destinationlabel">
-     <x>248</x>
-     <y>61</y>
-    </hint>
-   </hints>
-  </connection>
-  <connection>
-   <sender>NeedleGuide</sender>
-   <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
    <receiver>outputSelector</receiver>
    <slot>setMRMLScene(vtkMRMLScene*)</slot>
    <hints>
@@ -511,6 +534,7 @@
     </hint>
    </hints>
   </connection>
+<<<<<<< HEAD
   <connection>
    <sender>NeedleGuide</sender>
    <signal>mrmlSceneChanged(vtkMRMLScene*)</signal>
@@ -591,5 +615,7 @@
     </hint>
    </hints>
   </connection>
+=======
+>>>>>>> 59036c2 (changes ui layout)
  </connections>
 </ui>
