@@ -21,7 +21,8 @@ from slicer import (
     vtkMRMLMarkupsFiducialNode, 
     vtkMRMLModelNode, 
     vtkMRMLLinearTransformNode, 
-    vtkMRMLIGTLConnectorNode
+    vtkMRMLIGTLConnectorNode,
+    vtkMRMLSequenceBrowserNode
 )
 
 
@@ -135,7 +136,10 @@ class NeedleGuideParameterNode:
     opacityThreshold: Annotated[int, WithinRange(-100, 200)] = 60
     invertThreshold: bool = False
     showKidney: bool = True
-    showCalyx: bool = True
+    showCalyx: bool = False
+    recordingLeft: bool = True
+    recordingRight: bool = False
+    sequenceBrowserNode: vtkMRMLSequenceBrowserNode
 
 #
 # NeedleGuideWidget
@@ -204,6 +208,12 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Connect segmentation class visualization checkboxes
         self.ui.showKidneyCheckBox.connect('toggled(bool)', self.onSegmentationClassToggled)
         self.ui.showCalyxCheckBox.connect('toggled(bool)', self.onSegmentationClassToggled)
+        
+        # Connect sequence recording controls
+        self.ui.kidneyComboBox.connect('currentIndexChanged(int)', self.onKidneyTypeChanged)
+        self.ui.saveSequenceButton.connect('clicked(bool)', self.onSaveSequenceButton)
+        self.ui.startRecordingButton.connect('clicked(bool)', self.onStartRecordingButton)
+        self.ui.stopRecordingButton.connect('clicked(bool)', self.onStopRecordingButton)
        
         # Add custom layout
         self.addCustomLayouts()
@@ -592,6 +602,102 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
                 self._parameterNode.showKidney,
                 self._parameterNode.showCalyx
             )
+    
+    def onKidneyTypeChanged(self, index):
+        """Handle kidney type selection from combobox."""
+        if not self._parameterNode:
+            return
+        
+        if index == 0:  # Left kidney
+            self._parameterNode.recordingLeft = True
+            self._parameterNode.recordingRight = False
+        elif index == 1:  # Right kidney
+            self._parameterNode.recordingLeft = False
+            self._parameterNode.recordingRight = True
+    
+    def onSaveSequenceButton(self):
+        """Save the current ultrasound sequence with appropriate naming."""
+        print("[Save Sequence] Button pressed")
+        if not self._parameterNode:
+            msg = "Parameter node missing; attempting to initialize now"
+            print(f"[Save Sequence] {msg}")
+            logging.warning(msg)
+            try:
+                self.initializeParameterNode()
+            except Exception as e:
+                err = f"Failed to initialize parameter node: {e}"
+                print(f"[Save Sequence] {err}")
+                logging.error(err)
+            if not self._parameterNode:
+                err = "Parameter node is not available. Try reloading the module."
+                print(f"[Save Sequence] {err}")
+                logging.error(err)
+                return
+        
+        if not self._parameterNode.inputVolume:
+            msg = "Please select an input volume first"
+            print(f"[Save Sequence] {msg}")
+            logging.warning(msg)
+            return
+        
+        patientNum = self.ui.patientNumberSpinBox.value
+        kidneyIndex = self.ui.kidneyComboBox.currentIndex
+        
+        # Generate sequence name: P01_LK or P01_RK based on combobox selection
+        kidney_side = "LK" if kidneyIndex == 0 else "RK"
+        sequenceName = f"P{patientNum:02d}_{kidney_side}"
+        print(f"[Save Sequence] Creating sequence browser: {sequenceName}")
+        
+        # Create sequence browser if not already created
+        self.logic.createAndConfigureSequenceBrowser(
+            sequenceName,
+            self._parameterNode.inputVolume,
+            self._parameterNode.predictionVolume
+        )
+        
+        msg = f"Sequence '{sequenceName}' saved and ready for recording"
+        print(f"[Save Sequence] {msg}")
+        logging.info(msg)
+    
+    def onStartRecordingButton(self):
+        """Start recording the sequence with all proxy nodes."""
+        print("[Start Recording] Button pressed")
+        if not self._parameterNode or not self._parameterNode.sequenceBrowserNode:
+            msg = "Please save a sequence first before starting recording"
+            print(f"[Start Recording] {msg}")
+            logging.warning(msg)
+            logging.warning("Start recording called without active sequence browser")
+            return
+        
+        try:
+            self.logic.startSequenceRecording()
+            msg = "Sequence recording started - all proxy nodes are now recording"
+            print(f"[Start Recording] {msg}")
+            logging.info(msg)
+        except Exception as e:
+            err = f"Failed to start recording: {str(e)}"
+            print(f"[Start Recording] {err}")
+            logging.error(err)
+
+    def onStopRecordingButton(self):
+        """Stop recording the sequence."""
+        print("[Stop Recording] Button pressed")
+        if not self._parameterNode or not self._parameterNode.sequenceBrowserNode:
+            msg = "No active sequence recording"
+            print(f"[Stop Recording] {msg}")
+            logging.warning(msg)
+            logging.warning("Stop recording called without active sequence browser")
+            return
+
+        try:
+            self.logic.stopSequenceRecording()
+            msg = "Sequence recording stopped - all proxy nodes frozen"
+            print(f"[Stop Recording] {msg}")
+            logging.info(msg)
+        except Exception as e:
+            err = f"Failed to stop recording: {str(e)}"
+            print(f"[Stop Recording] {err}")
+            logging.error(err)
         
 #
 # NeedleGuideLogic
@@ -963,6 +1069,108 @@ class NeedleGuideLogic(ScriptedLoadableModuleLogic):
         else:
             slicer.mrmlScene.RemoveNode(cliNode)
             return outputVolume
+    
+    def createAndConfigureSequenceBrowser(self, sequenceName, inputVolume, predictionVolume):
+        """
+        Create and configure a sequence browser for recording ultrasound sequences.
+        Add proxy nodes for all tracked volumes and models.
+        
+        :param sequenceName: Name for the sequence (e.g., "P01_LK")
+        :param inputVolume: Input ultrasound volume node
+        :param predictionVolume: Prediction volume node
+        """
+        parameterNode = self.getParameterNode()
+        
+        # Create a new sequence browser node if it doesn't exist
+        sequenceBrowserNode = slicer.mrmlScene.AddNewNodeByClass(
+            "vtkMRMLSequenceBrowserNode", f"SequenceBrowser_{sequenceName}"
+        )
+        
+        # Get sequences logic
+        sequencesLogic = slicer.modules.sequences.logic()
+        
+        # Track success of adding nodes
+        successCount = 0
+        failedLabels = []
+
+        def add_proxy(node, label):
+            nonlocal successCount
+            if node:
+                try:
+                    seqNode = sequencesLogic.AddSynchronizedNode(None, node, sequenceBrowserNode)
+                    sequenceBrowserNode.SetRecording(seqNode, True)
+                    successCount += 1
+                    logging.info(f"Added '{label}' proxy node to sequence browser")
+                except Exception as e:
+                    failedLabels.append(label)
+                    logging.error(f"Failed to add '{label}' to sequence browser: {str(e)}")
+            else:
+                failedLabels.append(label)
+                logging.warning(f"Node '{label}' not found or not set")
+
+        # Prefer parameter node references (robust to naming)
+        add_proxy(parameterNode.referenceToRas, 'ReferenceToRas')
+        add_proxy(parameterNode.imageToReference, 'ImageToReference')
+        add_proxy(parameterNode.predictionToReference, 'PredToReference')
+        add_proxy(parameterNode.inputVolume or inputVolume, 'InputVolume')
+        add_proxy(parameterNode.predictionVolume or predictionVolume, 'PredictionVolume')
+        add_proxy(parameterNode.needleToReference, 'NeedleToReference')
+        add_proxy(parameterNode.needleTipToneedle, 'NeedleTipToNeedle')
+        add_proxy(parameterNode.needleModel, 'NeedleModel')
+
+        # No additional scene-named nodes needed; input volume is already added via parameter
+        
+        # Store sequence browser in parameter node
+        parameterNode.sequenceBrowserNode = sequenceBrowserNode
+
+        # Log final status
+        if failedLabels:
+            msg = f"Sequence browser '{sequenceName}' created with {successCount} nodes. Failed or missing: {', '.join(failedLabels)}."
+            print(f"[Sequence Browser] {msg}")
+            logging.warning(msg)
+        else:
+            msg = f"Sequence browser '{sequenceName}' created successfully with all {successCount} proxy nodes!"
+            print(f"[Sequence Browser] {msg}")
+            logging.info(msg)
+        
+    def getSequenceBrowserNode(self):
+        """Get the current sequence browser node."""
+        parameterNode = self.getParameterNode()
+        return parameterNode.sequenceBrowserNode
+        
+    def startSequenceRecording(self):
+        """Start recording to the current sequence browser."""
+        parameterNode = self.getParameterNode()
+        sequenceBrowserNode = parameterNode.sequenceBrowserNode
+        
+        if not sequenceBrowserNode:
+            raise RuntimeError("No active sequence browser node found")
+        
+        # Get all synchronized sequence nodes
+        synchronizedNodes = vtk.vtkCollection()
+        sequenceBrowserNode.GetSynchronizedSequenceNodes(synchronizedNodes, True)
+        
+        if synchronizedNodes.GetNumberOfItems() == 0:
+            raise RuntimeError("No synchronized nodes found in sequence browser")
+        
+        # Set all synchronized sequence nodes to recording mode
+        for i in range(synchronizedNodes.GetNumberOfItems()):
+            sequenceNode = synchronizedNodes.GetItemAsObject(i)
+            sequenceBrowserNode.SetRecording(sequenceNode, True)
+        
+        logging.info(f"Started sequence recording with {synchronizedNodes.GetNumberOfItems()} proxy nodes")
+        
+    def stopSequenceRecording(self):
+        """Stop recording to the current sequence browser."""
+        parameterNode = self.getParameterNode()
+        if parameterNode.sequenceBrowserNode:
+            # Set all synchronized sequence nodes to non-recording mode
+            synchronizedNodes = vtk.vtkCollection()
+            parameterNode.sequenceBrowserNode.GetSynchronizedSequenceNodes(synchronizedNodes, True)
+            for i in range(synchronizedNodes.GetNumberOfItems()):
+                sequenceNode = synchronizedNodes.GetItemAsObject(i)
+                parameterNode.sequenceBrowserNode.SetRecording(sequenceNode, False)
+            logging.info("Stopped sequence recording")
         
     def showInPlaneDepthLines(self):
         if not self.inPlaneOverlayModelNode:
