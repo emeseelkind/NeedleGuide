@@ -104,19 +104,12 @@
        </widget>
       </item>
       <item>
-       <widget class="QPushButton" name="startRecordingButton">
+       <widget class="QPushButton" name="saveRecordingButton">
         <property name="text">
-         <string>Start Recording</string>
+         <string>Save Recording</string>
         </property>
        </widget>
       </item>
-    <item>
-     <widget class="QPushButton" name="stopRecordingButton">
-      <property name="text">
-       <string>Stop Recording</string>
-      </property>
-     </widget>
-    </item>
      </layout>
     </widget>
    </item>

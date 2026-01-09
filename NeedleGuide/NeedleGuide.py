@@ -212,8 +212,7 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Connect sequence recording controls
         self.ui.kidneyComboBox.connect('currentIndexChanged(int)', self.onKidneyTypeChanged)
         self.ui.saveSequenceButton.connect('clicked(bool)', self.onSaveSequenceButton)
-        self.ui.startRecordingButton.connect('clicked(bool)', self.onStartRecordingButton)
-        self.ui.stopRecordingButton.connect('clicked(bool)', self.onStopRecordingButton)
+        self.ui.saveRecordingButton.connect('clicked(bool)', self.onSaveRecordingButton)
        
         # Add custom layout
         self.addCustomLayouts()
@@ -658,6 +657,59 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         msg = f"Sequence '{sequenceName}' saved and ready for recording"
         print(f"[Save Sequence] {msg}")
         logging.info(msg)
+    
+    def onSaveRecordingButton(self):
+        """Save the current recording to disk."""
+        print("[Save Recording] Button pressed")
+        if not self._parameterNode or not self._parameterNode.sequenceBrowserNode:
+            msg = "No active recording. Please save a sequence and record data first."
+            print(f"[Save Recording] {msg}")
+            logging.warning(msg)
+            return
+        
+        # Get sequence browser and check if it has recorded data
+        sequenceBrowserNode = self._parameterNode.sequenceBrowserNode
+        synchronizedNodes = vtk.vtkCollection()
+        sequenceBrowserNode.GetSynchronizedSequenceNodes(synchronizedNodes, True)
+        
+        if synchronizedNodes.GetNumberOfItems() == 0:
+            msg = "Sequence browser has no synchronized nodes to save."
+            print(f"[Save Recording] {msg}")
+            logging.warning(msg)
+            return
+        
+        # Generate filename based on sequence name
+        sequenceName = sequenceBrowserNode.GetName().replace("SequenceBrowser_", "")
+        
+        # Use Slicer's default save directory or Documents
+        import os
+        homeDir = os.path.expanduser("~")
+        saveDir = os.path.join(homeDir, "Documents", "NeedleGuideRecordings")
+        
+        # Create directory if it doesn't exist
+        if not os.path.exists(saveDir):
+            os.makedirs(saveDir)
+        
+        try:
+            # Save sequence browser node
+            sequenceFilename = os.path.join(saveDir, f"{sequenceName}.mrml")
+            slicer.util.saveNode(sequenceBrowserNode, sequenceFilename)
+            
+            # Save all synchronized sequence nodes
+            for i in range(synchronizedNodes.GetNumberOfItems()):
+                sequenceNode = synchronizedNodes.GetItemAsObject(i)
+                if sequenceNode:
+                    nodeName = sequenceNode.GetName()
+                    nodeFilename = os.path.join(saveDir, f"{nodeName}.seq.nrrd")
+                    slicer.util.saveNode(sequenceNode, nodeFilename)
+            
+            msg = f"Recording '{sequenceName}' saved to {saveDir}"
+            print(f"[Save Recording] {msg}")
+            logging.info(msg)
+        except Exception as e:
+            err = f"Failed to save recording: {str(e)}"
+            print(f"[Save Recording] {err}")
+            logging.error(err)
     
     def onStartRecordingButton(self):
         """Start recording the sequence with all proxy nodes."""
