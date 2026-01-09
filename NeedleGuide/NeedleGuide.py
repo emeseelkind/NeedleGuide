@@ -263,13 +263,15 @@ class NeedleGuideWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     def cleanup(self) -> None:
         """Called when the application closes and the module widget is destroyed."""
         # stop volume reconstruction if running
-        if self.logic.reconstructing:
+        if self.logic and self.logic.reconstructing:
             self.logic.stopVolumeReconstruction()
         
         # stop OpenIGTLink connections if running
         if self._parameterNode:
-            self._parameterNode.plusConnectorNode.Stop()
-            self._parameterNode.predictionConnectorNode.Stop()
+            if self._parameterNode.plusConnectorNode:
+                self._parameterNode.plusConnectorNode.Stop()
+            if self._parameterNode.predictionConnectorNode:
+                self._parameterNode.predictionConnectorNode.Stop()
         
         self.removeObservers()
 
