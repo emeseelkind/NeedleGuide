@@ -461,7 +461,7 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             # Update slice using reslice driver
             resliceDriverLogic.SetDriverForSlice(self._parameterNode.inputVolume.GetID(), sliceNode)
             resliceDriverLogic.SetModeForSlice(resliceDriverLogic.MODE_TRANSVERSE, sliceNode)
-            resliceDriverLogic.SetRotationForSlice(180, sliceNode)
+            resliceDriverLogic.SetRotationForSlice(0, sliceNode)
 
             # Fit slice to background
             sliceWidget.sliceController().fitSliceToBackground()
