@@ -23,7 +23,7 @@
          <item>
           <widget class="QLabel" name="patientNumberLabel">
            <property name="text">
-            <string>Patient Number:</string>
+            <string>Participant ID:</string>
            </property>
           </widget>
          </item>
@@ -38,6 +38,27 @@
            <property name="value">
             <number>1</number>
            </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QLabel" name="taskLabel">
+           <property name="text">
+            <string>Task:</string>
+           </property>
+          </widget>
+         </item>
+         <item>
+          <widget class="QComboBox" name="taskComboBox">
+           <item>
+            <property name="text">
+             <string>Manual</string>
+            </property>
+           </item>
+           <item>
+            <property name="text">
+             <string>Guided</string>
+            </property>
+           </item>
           </widget>
          </item>
          <item>
@@ -151,10 +172,208 @@
         </property>
        </widget>
       </item>
+      <item>
+       <widget class="QLabel" name="inPlaneDisplayModeLabel">
+        <property name="text">
+         <string>In-plane mode:</string>
+        </property>
+       </widget>
+      </item>
+      <item>
+       <widget class="QComboBox" name="inPlaneDisplayModeComboBox">
+        <item>
+         <property name="text">
+          <string>Projection</string>
+         </property>
+        </item>
+        <item>
+         <property name="text">
+          <string>Intersection</string>
+         </property>
+        </item>
+       </widget>
+      </item>
      </layout>
     </widget>
    </item>
-   <item row="2" column="0">
+  <item row="2" column="0">
+   <widget class="ctkCollapsibleButton" name="sceneNodesCollapsibleButton">
+    <property name="text">
+     <string>Scene Nodes and Transforms</string>
+    </property>
+    <layout class="QFormLayout" name="sceneNodesFormLayout">
+     <item row="0" column="0">
+      <widget class="QLabel" name="inputVolumeSelectorLabel">
+       <property name="text">
+        <string>Input image:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="0" column="1">
+      <widget class="qMRMLNodeComboBox" name="inputVolumeSelector">
+       <property name="nodeTypes">
+        <stringlist notr="true">
+         <string>vtkMRMLScalarVolumeNode</string>
+        </stringlist>
+       </property>
+       <property name="noneEnabled">
+        <bool>true</bool>
+       </property>
+       <property name="addEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="removeEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="SlicerParameterName" stdset="0">
+        <string>inputVolume</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="0">
+      <widget class="QLabel" name="predictionVolumeSelectorLabel">
+       <property name="text">
+        <string>Prediction volume:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="1" column="1">
+      <widget class="qMRMLNodeComboBox" name="predictionVolumeSelector">
+       <property name="nodeTypes">
+        <stringlist notr="true">
+         <string>vtkMRMLScalarVolumeNode</string>
+        </stringlist>
+       </property>
+       <property name="noneEnabled">
+        <bool>true</bool>
+       </property>
+       <property name="addEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="removeEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="SlicerParameterName" stdset="0">
+        <string>predictionVolume</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="0">
+      <widget class="QLabel" name="referenceToRasSelectorLabel">
+       <property name="text">
+        <string>ReferenceToRas:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="2" column="1">
+      <widget class="qMRMLNodeComboBox" name="referenceToRasSelector">
+       <property name="nodeTypes">
+        <stringlist notr="true">
+         <string>vtkMRMLLinearTransformNode</string>
+        </stringlist>
+       </property>
+       <property name="noneEnabled">
+        <bool>true</bool>
+       </property>
+       <property name="addEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="removeEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="SlicerParameterName" stdset="0">
+        <string>referenceToRas</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="0">
+      <widget class="QLabel" name="probeToReferenceSelectorLabel">
+       <property name="text">
+        <string>Probe/ImageToReference:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="3" column="1">
+      <widget class="qMRMLNodeComboBox" name="probeToReferenceSelector">
+       <property name="nodeTypes">
+        <stringlist notr="true">
+         <string>vtkMRMLLinearTransformNode</string>
+        </stringlist>
+       </property>
+       <property name="noneEnabled">
+        <bool>true</bool>
+       </property>
+       <property name="addEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="removeEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="SlicerParameterName" stdset="0">
+        <string>imageToReference</string>
+       </property>
+      </widget>
+     </item>
+     <item row="4" column="0">
+      <widget class="QLabel" name="cadProbeToProbeSelectorLabel">
+       <property name="text">
+        <string>CADProbeToProbe:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="4" column="1">
+      <widget class="qMRMLNodeComboBox" name="cadProbeToProbeSelector">
+       <property name="nodeTypes">
+        <stringlist notr="true">
+         <string>vtkMRMLLinearTransformNode</string>
+        </stringlist>
+       </property>
+       <property name="noneEnabled">
+        <bool>true</bool>
+       </property>
+       <property name="addEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="removeEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="SlicerParameterName" stdset="0">
+        <string>cadProbeToProbe</string>
+       </property>
+      </widget>
+     </item>
+     <item row="5" column="0">
+      <widget class="QLabel" name="reconstructorNodeSelectorLabel">
+       <property name="text">
+        <string>Volume reconstructor:</string>
+       </property>
+      </widget>
+     </item>
+     <item row="5" column="1">
+      <widget class="qMRMLNodeComboBox" name="reconstructorNodeSelector">
+       <property name="nodeTypes">
+        <stringlist notr="true">
+         <string>vtkMRMLVolumeReconstructionNode</string>
+        </stringlist>
+       </property>
+       <property name="noneEnabled">
+        <bool>true</bool>
+       </property>
+       <property name="addEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="removeEnabled">
+        <bool>false</bool>
+       </property>
+       <property name="SlicerParameterName" stdset="0">
+        <string>reconstructorNode</string>
+       </property>
+      </widget>
+     </item>
+    </layout>
+   </widget>
+  </item>
+  <item row="3" column="0">
     <widget class="ctkCollapsibleButton" name="outputsCollapsibleButton">
      <property name="text">
       <string>Outputs</string>
@@ -223,19 +442,6 @@
            </property>
            <property name="SlicerParameterName" stdset="0">
             <string>opacityThreshold</string>
-           </property>
-          </widget>
-         </item>
-         <item row="4" column="1">
-          <widget class="QCheckBox" name="showCalyxCheckBox">
-           <property name="text">
-            <string>Calyx (Class 2)</string>
-           </property>
-           <property name="checked">
-            <bool>true</bool>
-           </property>
-           <property name="SlicerParameterName" stdset="0">
-            <string>showCalyx</string>
            </property>
           </widget>
          </item>
@@ -323,7 +529,7 @@
      </layout>
     </widget>
    </item>
-   <item row="3" column="0">
+  <item row="4" column="0">
     <widget class="ctkCollapsibleButton" name="advancedCollapsibleButton">
      <property name="text">
       <string>Advanced</string>
@@ -364,7 +570,7 @@
      </layout>
     </widget>
    </item>
-   <item row="4" column="0">
+  <item row="5" column="0">
     <spacer name="verticalSpacer">
      <property name="orientation">
       <enum>Qt::Vertical</enum>

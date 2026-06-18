@@ -1,7 +1,8 @@
 import logging
 import numpy as np
 import os
-import math
+import json
+from datetime import datetime, timezone
 from typing import Annotated, Optional
 import qt
 import vtk
@@ -122,6 +123,7 @@ class KidneyNavParameterNode:
     inputVolume: vtkMRMLScalarVolumeNode
     referenceToRas: vtkMRMLLinearTransformNode
     imageToReference: vtkMRMLLinearTransformNode
+    cadProbeToProbe: vtkMRMLLinearTransformNode
     needleToReference: vtkMRMLLinearTransformNode
     needleTipToneedle: vtkMRMLLinearTransformNode
     needleModel: vtkMRMLModelNode
@@ -136,10 +138,11 @@ class KidneyNavParameterNode:
     opacityThreshold: Annotated[int, WithinRange(-100, 200)] = 60
     invertThreshold: bool = False
     showKidney: bool = True
-    showCalyx: bool = False
     recordingLeft: bool = True
     recordingRight: bool = False
+    inPlaneDisplayMode: str = "Projection"
     sequenceBrowserNode: vtkMRMLSequenceBrowserNode
+    checkpointDescription: str = ""
 
 #
 # KidneyNavWidget
@@ -186,6 +189,20 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         self.logic = KidneyNavLogic()
         self.logic.setup()
 
+        # Ensure any newly added qMRML widgets receive the MRML scene
+        for widgetName in [
+            "inputVolumeSelector",
+            "predictionVolumeSelector",
+            "referenceToRasSelector",
+            "probeToReferenceSelector",
+            "cadProbeToProbeSelector",
+            "reconstructorNodeSelector",
+        ]:
+            if hasattr(self.ui, widgetName):
+                w = getattr(self.ui, widgetName)
+                if hasattr(w, "setMRMLScene"):
+                    w.setMRMLScene(slicer.mrmlScene)
+
         # Connections
 
         # These connections ensure that we update parameter node when scene is closed
@@ -204,13 +221,16 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Explicitly connect signal/slot
         self.ui.inPlaneCheckBox.connect('toggled(bool)', self.onInPlaneOverlayToggled)
         self.ui.outOfPlaneCheckBox.connect('toggled(bool)', self.onOutOfPlaneOverlayToggled)
+        if hasattr(self.ui, 'inPlaneDisplayModeComboBox'):
+            self.ui.inPlaneDisplayModeComboBox.connect('currentIndexChanged(int)', self.onInPlaneDisplayModeChanged)
         
-        # Connect segmentation class visualization checkboxes
-        self.ui.showKidneyCheckBox.connect('toggled(bool)', self.onSegmentationClassToggled)
-        self.ui.showCalyxCheckBox.connect('toggled(bool)', self.onSegmentationClassToggled)
+        # Connect segmentation visualization checkbox (single binary segmentation)
+        if hasattr(self.ui, 'showKidneyCheckBox'):
+            self.ui.showKidneyCheckBox.connect('toggled(bool)', self.onSegmentationToggled)
         
         # Connect sequence recording controls
-        self.ui.kidneyComboBox.connect('currentIndexChanged(int)', self.onKidneyTypeChanged)
+        # Kidney side is not used for sequence creation in study workflows.
+        # Keep the selector in UI for other workflows, but it does not affect recording.
         self.ui.initializeRecordingButton.connect('clicked(bool)', self.onInitializeRecordingButton)
         self.ui.saveRecordingButton.connect('clicked(bool)', self.onSaveRecordingButton)
         
@@ -230,11 +250,8 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         # Make sure parameter node is initialized (needed for module reload)
         self.initializeParameterNode()
         
-        # Auto-assign hardcoded nodes (bypasses UI dropdowns)
-        self.autoAssignHardcodedNodes()
-        
-        # Hide node selector dropdowns from UI (they work in background)
-        self.hideNodeSelectors()
+        # Autofill known scene nodes but keep manual selectors available.
+        self.autoFillKnownSceneNodes()
         
         # Collapse DataProbe widget
         mw = slicer.util.mainWindow()
@@ -294,8 +311,8 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         """Called each time the user opens this module."""
         # Make sure parameter node exists and observed
         self.initializeParameterNode()
-        # Re-assign hardcoded nodes to ensure they're always set correctly
-        self.autoAssignHardcodedNodes()
+        # Refresh defaults from scene without overriding user-selected nodes.
+        self.autoFillKnownSceneNodes()
 
     def exit(self) -> None:
         """Called each time the user opens a different module."""
@@ -318,12 +335,13 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def onSceneStartImport(self, caller, event) -> None:
         if self.parent.isEntered:
-            slicer.mrmlScene.Clear(0)
+            logging.info("Scene import started: preserving existing hierarchy for recorded-sequence workflows.")
     
     def onSceneEndImport(self, caller, event) -> None:
         if self.parent.isEntered:
             self.logic.setup()
             self.initializeParameterNode()
+            self.autoFillKnownSceneNodes()
 
     def initializeParameterNode(self) -> None:
         """Ensure parameter node exists and observed."""
@@ -332,101 +350,33 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
         self.setParameterNode(self.logic.getParameterNode())
     
-    def autoAssignHardcodedNodes(self) -> None:
-        """
-        Automatically assign nodes by their hardcoded names, bypassing UI dropdowns.
-        This ensures nodes are always assigned without user selection.
-        """
-        if not hasattr(self, '_parameterNode') or not self._parameterNode:
+    def autoFillKnownSceneNodes(self) -> None:
+        """Assign defaults from known recorded-scene names without overriding manual selections."""
+        if not hasattr(self, '_parameterNode') or not self._parameterNode or not self.logic:
             return
-        
+
         parameterNode = self._parameterNode
-        if not hasattr(self, 'logic') or not self.logic:
-            return
-        
-        logic = self.logic
-        
-        # Assign nodes by their hardcoded names
-        try:
-            inputVolume = slicer.util.getNode(logic.IMAGE_IMAGE)
-            if inputVolume:
-                parameterNode.inputVolume = inputVolume
-        except Exception as e:
-            logging.warning(f"Could not assign inputVolume: {e}")
-        
-        try:
-            predictionVolume = slicer.util.getNode(logic.PREDICTION)
-            if predictionVolume:
-                parameterNode.predictionVolume = predictionVolume
-        except Exception as e:
-            logging.warning(f"Could not assign predictionVolume: {e}")
-        
-        try:
-            referenceToRas = slicer.util.getNode(logic.REFERENCE_TO_RAS)
-            if referenceToRas:
-                parameterNode.referenceToRas = referenceToRas
-        except Exception as e:
-            logging.warning(f"Could not assign referenceToRas: {e}")
-        
-        try:
-            needleToReference = slicer.util.getNode(logic.NEEDLE_TO_REFERENCE)
-            if needleToReference:
-                parameterNode.needleToReference = needleToReference
-        except Exception as e:
-            logging.warning(f"Could not assign needleToReference: {e}")
-        
-        try:
-            reconstructorNode = slicer.util.getNode(logic.RECONSTRUCTOR_NODE)
-            if reconstructorNode:
-                parameterNode.reconstructorNode = reconstructorNode
-        except Exception as e:
-            logging.warning(f"Could not assign reconstructorNode: {e}")
-        
-        try:
-            kidneyNavMarkups = slicer.util.getNode(logic.KIDNEY_NAV_MARKUP)
-            if kidneyNavMarkups:
-                parameterNode.kidneyNavMarkups = kidneyNavMarkups
-        except Exception as e:
-            logging.warning(f"Could not assign kidneyNavMarkups: {e}")
-    
-    def hideNodeSelectors(self) -> None:
-        """
-        Hide node selector dropdowns and their labels from the UI.
-        Nodes are now hardcoded and auto-assigned in the background.
-        """
-        if not hasattr(self, 'ui') or not self.ui:
-            return
-        
-        # Map of selector widget names to their label widget names
-        # These will be completely hidden from the UI
-        selectorsToHide = {
-            'inputSelector': 'label',                    # Ultrasound image
-            'referenceToRasComboBox': 'label_4',        # ReferenceToRas transform
-            'needleToReferenceComboBox': 'label_12',     # needleToReference transform
-            'predictionVolumeComboBox': 'label_6',       # Prediction image
-            'reconstructorNodeComboBox': 'label_7',      # Reconstructor node
-            'kidneyNavMarkupsComboxBox': 'label_11',   # Kidney nav markup
+        nodeCandidates = {
+            "inputVolume": [self.logic.IMAGE_IMAGE],
+            "predictionVolume": [self.logic.PREDICTION],
+            "referenceToRas": [self.logic.REFERENCE_TO_RAS],
+            # Recorded scenes often use ProbeToReference while live mode uses ImageToReference.
+            "imageToReference": ["ProbeToReference", self.logic.IMAGE_TO_REFERENCE],
+            "predictionToReference": [self.logic.PREDICTION_TO_REFERENCE],
+            "needleToReference": [self.logic.NEEDLE_TO_REFERENCE],
+            "needleTipToneedle": [self.logic.NEEDLE_TIP_TO_NEEDLE],
+            "cadProbeToProbe": [self.logic.CAD_PROBE_TO_PROBE],
+            "reconstructorNode": [self.logic.RECONSTRUCTOR_NODE],
+            "reconstructedVolume": [self.logic.RECONSTRUCTED_VOLUME],
+            "kidneyNavMarkups": [self.logic.KIDNEY_NAV_MARKUP],
         }
-        
-        # Hide both the selector and its label
-        for selectorName, labelName in selectorsToHide.items():
-            try:
-                # Hide the selector widget
-                if hasattr(self.ui, selectorName):
-                    selector = getattr(self.ui, selectorName)
-                    if selector:
-                        selector.setVisible(False)
-                        selector.hide()
-                        selector.setEnabled(False)
-                
-                # Hide the label widget
-                if hasattr(self.ui, labelName):
-                    label = getattr(self.ui, labelName)
-                    if label:
-                        label.setVisible(False)
-                        label.hide()
-            except Exception as e:
-                logging.warning(f"Could not hide {selectorName}: {e}")
+
+        for parameterName, candidateNames in nodeCandidates.items():
+            if getattr(parameterNode, parameterName):
+                continue
+            node = self.logic.getFirstNodeByNames(candidateNames)
+            if node:
+                setattr(parameterNode, parameterName, node)
         
     def setParameterNode(self, inputParameterNode: Optional[KidneyNavParameterNode]) -> None:
         """
@@ -460,8 +410,8 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
             # Update slice using reslice driver
             resliceDriverLogic.SetDriverForSlice(self._parameterNode.inputVolume.GetID(), sliceNode)
-            resliceDriverLogic.SetModeForSlice(resliceDriverLogic.MODE_TRANSVERSE, sliceNode)
-            resliceDriverLogic.SetRotationForSlice(0, sliceNode)
+            # Do not override slice orientation/rotation here.
+            # Recorded sequences may already have the desired slice orientation set.
 
             # Fit slice to background
             sliceWidget.sliceController().fitSliceToBackground()
@@ -494,13 +444,12 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             currentDisplayNode = vrLogic.GetFirstVolumeRenderingDisplayNode(self.displayedReconstructedVolume)
             if currentDisplayNode:
                 currentDisplayNode.SetVisibility(True)
-            
-            # Update segmentation class visualization when parameter node changes
+
+            # Update segmentation visualization when parameter node changes
             if hasattr(self._parameterNode, 'showKidney'):
-                self.logic.updateSegmentationClassVisualization(
+                self.logic.updateSegmentationVisualization(
                     self._parameterNode.reconstructedVolume,
                     self._parameterNode.showKidney,
-                    self._parameterNode.showCalyx
                 )
         else:
             self.ui.volumeOpacitySlider.enabled = False
@@ -513,6 +462,17 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             if self.observedKidneyNavMarkups:
                 self.addObserver(self.observedKidneyNavMarkups, vtkMRMLMarkupsFiducialNode.TransformModifiedEvent, self._onneedleToReferenceModified)
             self._onneedleToReferenceModified()
+
+        if self._parameterNode and hasattr(self.ui, 'inPlaneDisplayModeComboBox'):
+            displayMode = self._parameterNode.inPlaneDisplayMode if self._parameterNode.inPlaneDisplayMode else "Projection"
+            comboBox = self.ui.inPlaneDisplayModeComboBox
+            modeIndex = comboBox.findText(displayMode)
+            if modeIndex < 0:
+                modeIndex = 0
+            wasBlocked = comboBox.blockSignals(True)
+            comboBox.setCurrentIndex(modeIndex)
+            comboBox.blockSignals(wasBlocked)
+            self.logic.updateInPlaneOverlayDisplay()
         
     def _onneedleToReferenceModified(self, caller=None, event=None) -> None:
         # Distance calculation removed - target points feature has been removed
@@ -520,6 +480,10 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
     
     def onOpenIGTLinkButton(self, checked: bool) -> None:
         parameterNode = self._parameterNode
+        if not parameterNode.plusConnectorNode or not parameterNode.predictionConnectorNode:
+            logging.warning("OpenIGTLink connectors are not selected/found. Select them in the scene first.")
+            self.ui.startOpenIGTLinkButton.checked = False
+            return
         if checked:
             parameterNode.plusConnectorNode.Start()
             parameterNode.predictionConnectorNode.Start()
@@ -596,16 +560,25 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             print(f"In-plane overlay toggled: {checked}")
             self.logic.hideInPlaneDepthLines()
 
+    def onInPlaneDisplayModeChanged(self, index):
+        if not self._parameterNode or not hasattr(self.ui, 'inPlaneDisplayModeComboBox'):
+            return
+
+        selectedMode = self.ui.inPlaneDisplayModeComboBox.itemText(index)
+        if not selectedMode:
+            selectedMode = "Projection"
+        self._parameterNode.inPlaneDisplayMode = selectedMode
+        self.logic.updateInPlaneOverlayDisplay()
+
     def onOutOfPlaneOverlayToggled(self, checked):
         print(f"In-plane overlay toggled: {checked}")
     
-    def onSegmentationClassToggled(self, checked):
-        """Update volume rendering when segmentation class visibility is toggled."""
+    def onSegmentationToggled(self, checked):
+        """Update volume rendering when segmentation visibility is toggled."""
         if self._parameterNode and self._parameterNode.reconstructedVolume:
-            self.logic.updateSegmentationClassVisualization(
+            self.logic.updateSegmentationVisualization(
                 self._parameterNode.reconstructedVolume,
                 self._parameterNode.showKidney,
-                self._parameterNode.showCalyx
             )
     
     def onKidneyTypeChanged(self, index):
@@ -622,14 +595,24 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
     def _getCurrentSequenceName(self) -> str:
         """
-        Build the current sequence name based on patient number and kidney side.
-        Format: 3-digit participant id + '_' + side code (LK or RK), e.g. '001_LK'.
+        Build the current sequence name based on participant id and task type.
+        Format: 3-digit participant id + '_' + task, e.g. '001_manual'.
         """
-        patientNum = self.ui.patientNumberSpinBox.value
-        kidneyIndex = self.ui.kidneyComboBox.currentIndex
-        participant_id = f"{patientNum:03d}"
-        kidney_side = "LK" if kidneyIndex == 0 else "RK"
-        return f"{participant_id}_{kidney_side}"
+        participantNum = self.ui.patientNumberSpinBox.value
+        participant_id = f"{participantNum:03d}"
+
+        taskText = "manual"
+        if hasattr(self.ui, "taskComboBox"):
+            try:
+                taskText = (self.ui.taskComboBox.currentText or "manual").strip().lower()
+            except Exception:
+                taskText = "manual"
+
+        # Sanitize for filesystem safety
+        safeTask = "".join(ch if (ch.isalnum() or ch in ("-", "_")) else "_" for ch in taskText)
+        safeTask = safeTask.strip("_") or "manual"
+
+        return f"{participant_id}_{safeTask}"
 
     def onInitializeRecordingButton(self):
         """Initialize the sequence browser and proxies for the current participant/kidney."""
@@ -659,15 +642,12 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
         sequenceName = self._getCurrentSequenceName()
         print(f"[Initialize Recording] Creating sequence browser: {sequenceName}")
         
-        # Create sequence browser if not already created
+        # Create (or reuse) sequence browser and configure proxies
         self.logic.createAndConfigureSequenceBrowser(
             sequenceName,
             self._parameterNode.inputVolume,
             self._parameterNode.predictionVolume
         )
-        
-        # Connect sequence browser widget to the new node
-        self._updateSequenceBrowserWidget()
         
         # Connect sequence browser widget to the new node
         self._updateSequenceBrowserWidget()
@@ -707,6 +687,29 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             print(f"[Save Recording] {msg}")
             logging.warning(msg)
             return
+
+        # Stop recording before saving to avoid partial writes
+        try:
+            self.logic.stopSequenceRecording()
+        except Exception:
+            pass
+
+        # Verify we actually have recorded frames (not just configured proxies)
+        maxFrames = 0
+        for i in range(synchronizedNodes.GetNumberOfItems()):
+            seqNode = synchronizedNodes.GetItemAsObject(i)
+            if not seqNode:
+                continue
+            try:
+                if hasattr(seqNode, "GetNumberOfDataNodes"):
+                    maxFrames = max(maxFrames, int(seqNode.GetNumberOfDataNodes()))
+            except Exception:
+                continue
+        if maxFrames <= 0:
+            msg = "No frames recorded yet. Please record a sequence before saving."
+            print(f"[Save Recording] {msg}")
+            logging.warning(msg)
+            return
         
         # Generate base name based on current participant/kidney (e.g., 001_LK)
         sequenceName = self._getCurrentSequenceName()
@@ -732,12 +735,42 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
             slicer.util.saveNode(sequenceBrowserNode, sequenceFilename)
 
             # Save all synchronized sequence nodes with consistent naming
+            recordedProxyNames = []
             for i in range(synchronizedNodes.GetNumberOfItems()):
                 sequenceNode = synchronizedNodes.GetItemAsObject(i)
                 if sequenceNode:
                     nodeName = sequenceNode.GetName()
+                    recordedProxyNames.append(nodeName)
                     nodeFilename = os.path.join(saveDir, f"{sequenceName}_{nodeName}.seq.nrrd")
                     slicer.util.saveNode(sequenceNode, nodeFilename)
+
+            # Write metadata sidecar
+            taskValue = None
+            if hasattr(self.ui, "taskComboBox"):
+                try:
+                    taskValue = (self.ui.taskComboBox.currentText or "").strip()
+                except Exception:
+                    taskValue = None
+            if not taskValue:
+                parts = sequenceName.split("_", 1)
+                taskValue = parts[1] if len(parts) > 1 else "manual"
+
+            meta = {
+                "sequenceName": sequenceName,
+                "participantId": participantId,
+                "task": taskValue,
+                "savedAtUtc": datetime.now(timezone.utc).isoformat(),
+                "outputDirectory": saveDir,
+                "recordedProxies": recordedProxyNames,
+                "maxFrames": maxFrames,
+            }
+            try:
+                meta["slicerVersion"] = slicer.app.applicationVersion
+            except Exception:
+                pass
+            metaPath = os.path.join(saveDir, f"{sequenceName}_metadata.json")
+            with open(metaPath, "w", encoding="utf-8") as f:
+                json.dump(meta, f, indent=2)
             
             msg = f"Recording '{sequenceName}' saved to {saveDir}"
             print(f"[Save Recording] {msg}")
@@ -753,13 +786,18 @@ class KidneyNavWidget(ScriptedLoadableModuleWidget, VTKObservationMixin):
 
 
 class KidneyNavLogic(ScriptedLoadableModuleLogic):
-    """This class should implement all the actual
-    computation done by your module.  The interface
-    should be such that other python code can import
-    this class and make use of the functionality without
-    requiring an instance of the Widget.
-    Uses ScriptedLoadableModuleLogic base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
+    """Logic for KidneyNav volume reconstruction and visualization.
+
+    This logic is agnostic to which segmentation checkpoint is used.
+    It assumes that an external inference client:
+    - Produces a prediction volume node named ``Prediction`` (or wired via the parameter node)
+      containing a binary label map where 0=background and 1=target anatomy.
+    - Streams that prediction into Slicer over OpenIGTLink.
+
+    KidneyNavLogic is responsible only for:
+    - Creating/configuring MRML nodes (transforms, input/prediction volumes, reconstruction, overlays)
+    - Driving live volume reconstruction from the prediction volume
+    - Configuring binary volume rendering of the reconstructed volume
     """
 
     # transform names
@@ -768,6 +806,7 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
     PREDICTION_TO_REFERENCE = "PredToReference"
     NEEDLE_TO_REFERENCE = "NeedleToReference"
     NEEDLE_TIP_TO_NEEDLE = "NeedleTipToNeedle"
+    CAD_PROBE_TO_PROBE = "CADProbeToProbe"
 
     # volume names
     IMAGE_IMAGE = "Image_Image"
@@ -788,138 +827,214 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
     NEEDLE_MODEL = "NeedleModel"
     NEEDLE_LENGTH = 80  # mm
     KIDNEY_NAV_MARKUP = "KidneyNavMarkup"
+    INPLANE_OVERLAY_MODEL = "InPlaneDepthOverlayModel"
 
     def __init__(self) -> None:
         """Called when the logic class is instantiated. Can be used for initializing member variables."""
         ScriptedLoadableModuleLogic.__init__(self)
         
         self.reconstructing = False
-        self.inPlaneOverlayModelNode = None
+        # Render in-plane guide channels as separate model nodes to allow distinct colors.
+        self.inPlaneOverlayModelNodes = {}
 
     def getParameterNode(self):
         return KidneyNavParameterNode(super().getParameterNode())
 
+    def getFirstNodeByNames(self, names, className=None):
+        for nodeName in names:
+            node = None
+            try:
+                node = slicer.util.getNode(nodeName)
+            except Exception:
+                node = None
+            if not node:
+                continue
+            if className and not node.IsA(className):
+                continue
+            return node
+        return None
+
+    def _getOrCreateNode(self, parameterNode, parameterName, className, primaryName, aliases=None, initializer=None):
+        aliases = aliases or []
+        node = getattr(parameterNode, parameterName)
+        created = False
+
+        if not node:
+            node = self.getFirstNodeByNames([primaryName] + aliases, className)
+        if not node:
+            node = slicer.mrmlScene.AddNewNodeByClass(className, primaryName)
+            created = True
+            if initializer:
+                initializer(node)
+
+        if node:
+            setattr(parameterNode, parameterName, node)
+        return node, created
+
     def setup(self):
-        # create nodes for image, prediction, volume reconstruction, and transforms
+        # Manual-node workflow: only predictionVolume is auto-created if missing.
         parameterNode = self.getParameterNode()
-        if not parameterNode.referenceToRas:
-            referenceToRas = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.REFERENCE_TO_RAS)
-            parameterNode.referenceToRas = referenceToRas
-        
-        if not parameterNode.imageToReference:
-            imageToReference = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.IMAGE_TO_REFERENCE)
-            imageToReference.SetAndObserveTransformNodeID(parameterNode.referenceToRas.GetID())
-            parameterNode.imageToReference = imageToReference
 
-        if not parameterNode.inputVolume:
-            inputVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", self.IMAGE_IMAGE)
-            inputVolume.CreateDefaultDisplayNodes()
-            inputArray = np.zeros((1, 512, 512), dtype="uint8")
-            slicer.util.updateVolumeFromArray(inputVolume, inputArray)
-            inputVolume.SetAndObserveTransformNodeID(parameterNode.imageToReference.GetID())
-            parameterNode.inputVolume = inputVolume
+        parameterNode.referenceToRas = parameterNode.referenceToRas or self.getFirstNodeByNames(
+            [self.REFERENCE_TO_RAS], "vtkMRMLLinearTransformNode"
+        )
+        parameterNode.imageToReference = parameterNode.imageToReference or self.getFirstNodeByNames(
+            ["ProbeToReference", self.IMAGE_TO_REFERENCE], "vtkMRMLLinearTransformNode"
+        )
+        parameterNode.cadProbeToProbe = parameterNode.cadProbeToProbe or self.getFirstNodeByNames(
+            [self.CAD_PROBE_TO_PROBE], "vtkMRMLLinearTransformNode"
+        )
+        parameterNode.inputVolume = parameterNode.inputVolume or self.getFirstNodeByNames(
+            [self.IMAGE_IMAGE], "vtkMRMLScalarVolumeNode"
+        )
+        predictionToReference = parameterNode.predictionToReference or self.getFirstNodeByNames(
+            [self.PREDICTION_TO_REFERENCE], "vtkMRMLLinearTransformNode"
+        )
+        if not predictionToReference:
+            predictionToReference = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLLinearTransformNode", self.PREDICTION_TO_REFERENCE
+            )
+            if parameterNode.referenceToRas and not predictionToReference.GetParentTransformNode():
+                predictionToReference.SetAndObserveTransformNodeID(parameterNode.referenceToRas.GetID())
+            logging.info("Auto-created missing prediction transform '%s'.", self.PREDICTION_TO_REFERENCE)
+        parameterNode.predictionToReference = predictionToReference
 
-        if not parameterNode.predictionToReference:
-            predictionToReference = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.PREDICTION_TO_REFERENCE)
-            predictionToReference.SetAndObserveTransformNodeID(parameterNode.referenceToRas.GetID())
-            parameterNode.predictionToReference = predictionToReference
-        
-        if not parameterNode.predictionVolume:
+        predictionVolume = parameterNode.predictionVolume or self.getFirstNodeByNames(
+            [self.PREDICTION], "vtkMRMLScalarVolumeNode"
+        )
+        predictionVolumeCreated = False
+        if not predictionVolume:
             predictionVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", self.PREDICTION)
             predictionVolume.CreateDefaultDisplayNodes()
             predictionArray = np.zeros((1, 512, 512), dtype="uint8")
             slicer.util.updateVolumeFromArray(predictionVolume, predictionArray)
+            predictionVolumeCreated = True
+            logging.info("Auto-created missing prediction volume '%s'.", self.PREDICTION)
+        parameterNode.predictionVolume = predictionVolume
+        if predictionVolumeCreated and parameterNode.predictionToReference and not predictionVolume.GetParentTransformNode():
             predictionVolume.SetAndObserveTransformNodeID(parameterNode.predictionToReference.GetID())
-            parameterNode.predictionVolume = predictionVolume
 
-        if not parameterNode.needleToReference:
-            needleToReference = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.NEEDLE_TO_REFERENCE)
-            needleToReference.SetAndObserveTransformNodeID(parameterNode.referenceToRas.GetID())
-            parameterNode.needleToReference = needleToReference
-
-        if not parameterNode.needleTipToneedle:
-            needleTipToneedle = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLLinearTransformNode", self.NEEDLE_TIP_TO_NEEDLE)
-            needleTipToneedle.SetAndObserveTransformNodeID(parameterNode.needleToReference.GetID())
-            # TODO: update with actual needle tip to needle transform, probably best to save as a .h5 file
-            parameterNode.needleTipToneedle = needleTipToneedle
-        
-        if not parameterNode.needleModel:
-            createModelsLogic = slicer.modules.createmodels.logic()
-            needleModel = createModelsLogic.CreateNeedle(self.NEEDLE_LENGTH, 1.0, 2.5, False)
-            needleModel.GetDisplayNode().SetColor(0.33, 1.0, 1.0)
-            needleModel.SetName(self.NEEDLE_MODEL)
-            needleModel.GetDisplayNode().Visibility2DOn()
-            needleModel.SetAndObserveTransformNodeID(parameterNode.needleTipToneedle.GetID())
-            parameterNode.needleModel = needleModel
+        parameterNode.needleToReference = parameterNode.needleToReference or self.getFirstNodeByNames(
+            [self.NEEDLE_TO_REFERENCE], "vtkMRMLLinearTransformNode"
+        )
+        parameterNode.needleTipToneedle = parameterNode.needleTipToneedle or self.getFirstNodeByNames(
+            [self.NEEDLE_TIP_TO_NEEDLE], "vtkMRMLLinearTransformNode"
+        )
+        parameterNode.needleModel = parameterNode.needleModel or self.getFirstNodeByNames(
+            [self.NEEDLE_MODEL], "vtkMRMLModelNode"
+        )
+        parameterNode.reconstructedVolume = parameterNode.reconstructedVolume or self.getFirstNodeByNames(
+            [self.RECONSTRUCTED_VOLUME], "vtkMRMLScalarVolumeNode"
+        )
+        parameterNode.reconstructorNode = parameterNode.reconstructorNode or self.getFirstNodeByNames(
+            [self.RECONSTRUCTOR_NODE], "vtkMRMLVolumeReconstructionNode"
+        )
+        parameterNode.kidneyNavMarkups = parameterNode.kidneyNavMarkups or self.getFirstNodeByNames(
+            [self.KIDNEY_NAV_MARKUP], "vtkMRMLMarkupsFiducialNode"
+        )
 
         if not parameterNode.reconstructedVolume:
-            reconstructedVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode", self.RECONSTRUCTED_VOLUME)
-            reconstructedVolume.CreateDefaultDisplayNodes()
-            volRenLogic = slicer.modules.volumerendering.logic()
-            displayNode = volRenLogic.CreateDefaultVolumeRenderingNodes(reconstructedVolume)
-            displayNode.SetVisibility(True)
-            displayNode.GetVolumePropertyNode().Copy(volRenLogic.GetPresetByName("MR-Default"))
-            parameterNode.reconstructedVolume = reconstructedVolume
+            parameterNode.reconstructedVolume = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLScalarVolumeNode", self.RECONSTRUCTED_VOLUME
+            )
+            parameterNode.reconstructedVolume.CreateDefaultDisplayNodes()
 
         if not parameterNode.reconstructorNode:
-            reconstructorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLVolumeReconstructionNode", self.RECONSTRUCTOR_NODE)
-            reconstructorNode.SetLiveVolumeReconstruction(True)
-            reconstructorNode.SetInterpolationMode(1)  # linear
-            reconstructorNode.SetAndObserveInputVolumeNode(parameterNode.predictionVolume)
-            reconstructorNode.SetAndObserveOutputVolumeNode(parameterNode.reconstructedVolume)
+            parameterNode.reconstructorNode = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLVolumeReconstructionNode", self.RECONSTRUCTOR_NODE
+            )
+            parameterNode.reconstructorNode.SetLiveVolumeReconstruction(True)
+            parameterNode.reconstructorNode.SetInterpolationMode(1)  # linear
+            logging.info("Auto-created missing volume reconstruction node '%s'.", self.RECONSTRUCTOR_NODE)
 
-            # create roi node
-            roiNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsROINode", self.RECONSTRUCTION_ROI)
-            roiNode.SetSize((250, 250, 350))
-            roiNode.SetDisplayVisibility(False)
-            reconstructorNode.SetAndObserveInputROINode(roiNode)
-            parameterNode.reconstructorNode = reconstructorNode
+        if parameterNode.needleModel and parameterNode.needleModel.GetDisplayNode():
+            parameterNode.needleModel.GetDisplayNode().Visibility2DOn()
+        if parameterNode.needleModel and parameterNode.needleTipToneedle and not parameterNode.needleModel.GetParentTransformNode():
+            parameterNode.needleModel.SetAndObserveTransformNodeID(parameterNode.needleTipToneedle.GetID())
 
-        if not parameterNode.kidneyNavMarkups:
-            kidneyNavMarkups = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsFiducialNode", self.KIDNEY_NAV_MARKUP)
-            kidneyNavMarkups.SetMaximumNumberOfControlPoints(1)
-            kidneyNavMarkups.CreateDefaultDisplayNodes()
-            kidneyNavMarkups.SetDisplayVisibility(False)
-            parameterNode.kidneyNavMarkups = kidneyNavMarkups
-        
+        if parameterNode.reconstructedVolume:
+            volRenLogic = slicer.modules.volumerendering.logic()
+            reconstructedDisplay = volRenLogic.GetFirstVolumeRenderingDisplayNode(parameterNode.reconstructedVolume)
+            if not reconstructedDisplay:
+                reconstructedDisplay = volRenLogic.CreateDefaultVolumeRenderingNodes(parameterNode.reconstructedVolume)
+            reconstructedDisplay.SetVisibility(True)
+            reconstructedDisplay.GetVolumePropertyNode().Copy(volRenLogic.GetPresetByName("MR-Default"))
+
+        if parameterNode.reconstructorNode:
+            parameterNode.reconstructorNode.SetLiveVolumeReconstruction(True)
+            parameterNode.reconstructorNode.SetInterpolationMode(1)  # linear
+            if parameterNode.predictionVolume and not parameterNode.reconstructorNode.GetInputVolumeNode():
+                parameterNode.reconstructorNode.SetAndObserveInputVolumeNode(parameterNode.predictionVolume)
+            if parameterNode.reconstructedVolume and not parameterNode.reconstructorNode.GetOutputVolumeNode():
+                parameterNode.reconstructorNode.SetAndObserveOutputVolumeNode(parameterNode.reconstructedVolume)
+            if not parameterNode.reconstructorNode.GetInputROINode():
+                roiNode = self.getFirstNodeByNames([self.RECONSTRUCTION_ROI], "vtkMRMLMarkupsROINode")
+                if not roiNode:
+                    roiNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLMarkupsROINode", self.RECONSTRUCTION_ROI)
+                    roiNode.SetSize((250, 250, 350))
+                    roiNode.SetDisplayVisibility(False)
+                parameterNode.reconstructorNode.SetAndObserveInputROINode(roiNode)
+
+        if parameterNode.kidneyNavMarkups:
+            parameterNode.kidneyNavMarkups.SetMaximumNumberOfControlPoints(1)
+            parameterNode.kidneyNavMarkups.CreateDefaultDisplayNodes()
+            parameterNode.kidneyNavMarkups.SetDisplayVisibility(False)
+
+        missingManualNodes = []
+        for parameterName in [
+            "referenceToRas",
+            "imageToReference",
+            "cadProbeToProbe",
+            "inputVolume",
+            "predictionToReference",
+            "needleToReference",
+            "needleTipToneedle",
+            "needleModel",
+            "reconstructedVolume",
+            "reconstructorNode",
+            "kidneyNavMarkups",
+        ]:
+            if not getattr(parameterNode, parameterName):
+                missingManualNodes.append(parameterName)
+        if missingManualNodes:
+            logging.warning(
+                "Manual scene nodes not found (not auto-created): %s",
+                ", ".join(missingManualNodes),
+            )
+
         self.setupOpenIgtLink()
     
     def setupOpenIgtLink(self):
         parameterNode = self.getParameterNode()
+        parameterNode.plusConnectorNode = parameterNode.plusConnectorNode or self.getFirstNodeByNames(
+            [self.PLUS_CONNECTOR], "vtkMRMLIGTLConnectorNode"
+        )
+        parameterNode.predictionConnectorNode = parameterNode.predictionConnectorNode or self.getFirstNodeByNames(
+            [self.PREDICTION_CONNECTOR], "vtkMRMLIGTLConnectorNode"
+        )
 
-        # create OpenIGTLink connector node for ultrasound image and tracking
-        plusConnectorNode = parameterNode.plusConnectorNode
-        if not plusConnectorNode:
-            plusConnectorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLIGTLConnectorNode", self.PLUS_CONNECTOR)
-            plusConnectorNode.SetTypeClient("localhost", self.PLUS_CONNECTOR_PORT)
-            parameterNode.plusConnectorNode = plusConnectorNode
-        
-        # create OpenIGTLink connector node for prediction
-        predictionConnectorNode = parameterNode.predictionConnectorNode
-        if not predictionConnectorNode:
-            predictionConnectorNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLIGTLConnectorNode", self.PREDICTION_CONNECTOR)
-            predictionConnectorNode.SetTypeClient("localhost", self.PREDICTION_CONNECTOR_PORT)
-            parameterNode.predictionConnectorNode = predictionConnectorNode
+        if not parameterNode.plusConnectorNode:
+            logging.warning("PLUS connector '%s' not found (not auto-created).", self.PLUS_CONNECTOR)
+        if not parameterNode.predictionConnectorNode:
+            logging.warning("Prediction connector '%s' not found (not auto-created).", self.PREDICTION_CONNECTOR)
     
     def startVolumeReconstruction(self):
         """
         Start live volume reconstruction.
         """
         parameterNode = self.getParameterNode()
+        if not parameterNode.reconstructorNode:
+            logging.warning("Volume reconstruction node is not selected/found. Cannot start reconstruction.")
+            return
         self.reconstructing = True
         reconstructionLogic = slicer.modules.volumereconstruction.logic()
         reconstructionLogic.StartLiveVolumeReconstruction(parameterNode.reconstructorNode)
         outputVolume = parameterNode.reconstructorNode.GetOutputVolumeNode()
-        # Use segmentation class visualization if it's a segmentation volume
-        # Otherwise use standard volume rendering
-        if parameterNode.showKidney or parameterNode.showCalyx:
-            self.updateSegmentationClassVisualization(
-                outputVolume,
-                parameterNode.showKidney,
-                parameterNode.showCalyx
-            )
-        else:
-            self.setVolumeRenderingProperty(outputVolume, window=200, level=(255-parameterNode.opacityThreshold))
+        # Use binary segmentation visualization (single foreground label)
+        self.updateSegmentationVisualization(
+            outputVolume,
+            parameterNode.showKidney,
+        )
         parameterNode.reconstructedVolume = outputVolume
     
     def stopVolumeReconstruction(self):
@@ -966,61 +1081,44 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
         volumeProperty.ShadeOn()
         volumeProperty.SetInterpolationTypeToLinear()
     
-    def updateSegmentationClassVisualization(self, volumeNode, showKidney=True, showCalyx=True):
+    def updateSegmentationVisualization(self, volumeNode, visible=True):
         """
-        Update volume rendering to show selected segmentation classes with different colors.
-        
-        Classes:
+        Update volume rendering to show a single binary segmentation class.
+
+        Assumes:
         - 0: Background (always transparent)
-        - 1: Kidney (red/brown)
-        - 2: Calyx (blue/cyan)
+        - 1: Target anatomy (kidney or renal pelvis)
         """
         if not volumeNode:
             return
-        
+
         volumeRenderingLogic = slicer.modules.volumerendering.logic()
         volumeRenderingDisplayNode = volumeRenderingLogic.GetFirstVolumeRenderingDisplayNode(volumeNode)
         if not volumeRenderingDisplayNode:
             volumeRenderingDisplayNode = volumeRenderingLogic.CreateDefaultVolumeRenderingNodes(volumeNode)
-        
-        # Create color transfer function for segmentation classes
+
+        if not visible:
+            volumeRenderingDisplayNode.SetVisibility(False)
+            return
+
+        # Create color transfer function for binary segmentation
         colorTransferFunction = vtk.vtkColorTransferFunction()
-        
-        # Create opacity transfer function
         opacityTransferFunction = vtk.vtkPiecewiseFunction()
-        
-        # Class 0: Background - Always transparent (never shown)
-        colorTransferFunction.AddRGBPoint(0, 0.0, 0.0, 0.0)  # Black
-        opacityTransferFunction.AddPoint(0, 0.0)  # Fully transparent
-        
-        # Class 1: Kidney - Red/Brown
-        if showKidney:
-            colorTransferFunction.AddRGBPoint(1, 0.8, 0.2, 0.2)  # Red
-            opacityTransferFunction.AddPoint(1, 0.8)  # Mostly opaque
-        else:
-            colorTransferFunction.AddRGBPoint(1, 0.0, 0.0, 0.0)  # Black
-            opacityTransferFunction.AddPoint(1, 0.0)  # Fully transparent
-        
-        # Class 2: Calyx - Blue/Cyan
-        if showCalyx:
-            colorTransferFunction.AddRGBPoint(2, 0.2, 0.6, 0.9)  # Cyan/Blue
-            opacityTransferFunction.AddPoint(2, 0.9)  # Mostly opaque
-        else:
-            colorTransferFunction.AddRGBPoint(2, 0.0, 0.0, 0.0)  # Black
-            opacityTransferFunction.AddPoint(2, 0.0)  # Fully transparent
-        
-        # Set smooth transitions between classes
-        colorTransferFunction.AddRGBPoint(0.5, 0.4, 0.4, 0.4)  # Transition between 0 and 1
-        colorTransferFunction.AddRGBPoint(1.5, 0.5, 0.4, 0.5)  # Transition between 1 and 2
-        
-        # Apply to volume property
+
+        # Background: fully transparent
+        colorTransferFunction.AddRGBPoint(0, 0.0, 0.0, 0.0)
+        opacityTransferFunction.AddPoint(0, 0.0)
+
+        # Foreground label 1: solid color
+        colorTransferFunction.AddRGBPoint(1, 0.8, 0.2, 0.2)  # reddish
+        opacityTransferFunction.AddPoint(1, 0.9)
+
         volumeProperty = volumeRenderingDisplayNode.GetVolumePropertyNode().GetVolumeProperty()
         volumeProperty.SetColor(colorTransferFunction)
         volumeProperty.SetScalarOpacity(opacityTransferFunction)
         volumeProperty.ShadeOn()
         volumeProperty.SetInterpolationTypeToLinear()
-        
-        # Ensure visibility is on
+
         volumeRenderingDisplayNode.SetVisibility(True)
     
     def resetReferenceToRasBasedOnImage(self):
@@ -1128,11 +1226,21 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
         :param predictionVolume: Prediction volume node
         """
         parameterNode = self.getParameterNode()
-        
+
+        browserName = f"SequenceBrowser_{sequenceName}"
+        sequenceBrowserNode = None
+        try:
+            sequenceBrowserNode = slicer.util.getNode(browserName)
+            if sequenceBrowserNode and not sequenceBrowserNode.IsA("vtkMRMLSequenceBrowserNode"):
+                sequenceBrowserNode = None
+        except Exception:
+            sequenceBrowserNode = None
+
         # Create a new sequence browser node if it doesn't exist
-        sequenceBrowserNode = slicer.mrmlScene.AddNewNodeByClass(
-            "vtkMRMLSequenceBrowserNode", f"SequenceBrowser_{sequenceName}"
-        )
+        if not sequenceBrowserNode:
+            sequenceBrowserNode = slicer.mrmlScene.AddNewNodeByClass(
+                "vtkMRMLSequenceBrowserNode", browserName
+            )
         
         # Get sequences logic
         sequencesLogic = slicer.modules.sequences.logic()
@@ -1140,14 +1248,20 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
         # Track success of adding nodes
         successCount = 0
         failedLabels = []
+        addedNodeIds = set()
 
         def add_proxy(node, label):
             nonlocal successCount
             if node:
+                nodeId = node.GetID() if hasattr(node, "GetID") else None
+                if nodeId and nodeId in addedNodeIds:
+                    return
                 try:
                     seqNode = sequencesLogic.AddSynchronizedNode(None, node, sequenceBrowserNode)
                     sequenceBrowserNode.SetRecording(seqNode, True)
                     successCount += 1
+                    if nodeId:
+                        addedNodeIds.add(nodeId)
                     logging.info(f"Added '{label}' proxy node to sequence browser")
                 except Exception as e:
                     failedLabels.append(label)
@@ -1159,8 +1273,24 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
         # Prefer parameter node references (robust to naming)
         add_proxy(parameterNode.referenceToRas, 'ReferenceToRas')
         add_proxy(parameterNode.imageToReference, 'ImageToReference')
+        # Some recorded/live scenes have ProbeToReference as a separate transform. Record it explicitly if present.
+        probeToReference = self.getFirstNodeByNames(["ProbeToReference"], "vtkMRMLLinearTransformNode")
+        if probeToReference and parameterNode.imageToReference and probeToReference.GetID() == parameterNode.imageToReference.GetID():
+            probeToReference = None
+        add_proxy(probeToReference, "ProbeToReference")
+
+        # Optional manual correction and CAD correction transforms (appear in study transform tree)
+        manualCorrection = self.getFirstNodeByNames(["Manual_Correction", "ManualCorrection"], "vtkMRMLLinearTransformNode")
+        add_proxy(manualCorrection, "Manual_Correction")
+        correctionCad2Probe = self.getFirstNodeByNames(["Correction_CAD2Probe", "CorrectionCAD2Probe", "CAD2Probe"], "vtkMRMLLinearTransformNode")
+        add_proxy(correctionCad2Probe, "Correction_CAD2Probe")
+        add_proxy(parameterNode.cadProbeToProbe, "CADProbeToProbe")
+
         add_proxy(parameterNode.predictionToReference, 'PredToReference')
         add_proxy(parameterNode.inputVolume or inputVolume, 'InputVolume')
+        # Record the canonical ultrasound stream node name too (even if a different input is selected)
+        imageImage = self.getFirstNodeByNames([self.IMAGE_IMAGE], "vtkMRMLScalarVolumeNode")
+        add_proxy(imageImage, self.IMAGE_IMAGE)
         add_proxy(parameterNode.predictionVolume or predictionVolume, 'PredictionVolume')
         add_proxy(parameterNode.needleToReference, 'NeedleToReference')
         add_proxy(parameterNode.needleTipToneedle, 'NeedleTipToNeedle')
@@ -1221,165 +1351,164 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
             logging.info("Stopped sequence recording")
         
     def showInPlaneDepthLines(self):
-        if not self.inPlaneOverlayModelNode:
-            self.inPlaneOverlayModelNode = slicer.mrmlScene.AddNewNodeByClass(
-                'vtkMRMLModelNode', 'InPlaneDepthOverlayModel')
+        cadProbeToProbe = self._getRequiredCadProbeToProbeTransform()
+        if not cadProbeToProbe:
+            for node in self.inPlaneOverlayModelNodes.values():
+                try:
+                    node.SetDisplayVisibility(False)
+                except Exception:
+                    pass
+            return
 
-            self._createInPlaneDepthFanModel(self.inPlaneOverlayModelNode)
+        # Hide any legacy single-model overlay node (older versions rendered both channels in one model)
+        try:
+            legacyNode = slicer.util.getNode(self.INPLANE_OVERLAY_MODEL)
+            if legacyNode and legacyNode.IsA("vtkMRMLModelNode"):
+                legacyNode.SetDisplayVisibility(False)
+        except Exception:
+            pass
 
-        self.inPlaneOverlayModelNode.SetDisplayVisibility(True)
+        self._createInPlaneDepthLinesModels()
+        for node in self.inPlaneOverlayModelNodes.values():
+            node.SetAndObserveTransformNodeID(cadProbeToProbe.GetID())
+            node.SetDisplayVisibility(True)
 
     def hideInPlaneDepthLines(self):
-        if self.inPlaneOverlayModelNode:
-            self.inPlaneOverlayModelNode.SetDisplayVisibility(False)
+        # Hide any legacy node too
+        try:
+            legacyNode = slicer.util.getNode(self.INPLANE_OVERLAY_MODEL)
+            if legacyNode and legacyNode.IsA("vtkMRMLModelNode"):
+                legacyNode.SetDisplayVisibility(False)
+        except Exception:
+            pass
+        for node in self.inPlaneOverlayModelNodes.values():
+            try:
+                node.SetDisplayVisibility(False)
+            except Exception:
+                pass
 
-    def _createInPlaneDepthLinesModel(self, modelNode):
-    
-        imageNode = slicer.util.getNode('Image_Image')
-        imageData = imageNode.GetImageData()
-        spacing = imageNode.GetSpacing()      # (x_spacing, y_spacing, z_spacing)
-        origin = imageNode.GetOrigin()        # (x0, y0, z0)
-        dims = imageData.GetDimensions()      # (cols, rows, slices)
+    def updateInPlaneOverlayDisplay(self):
+        if not self.inPlaneOverlayModelNodes:
+            return
+        for name, node in self.inPlaneOverlayModelNodes.items():
+            displayNode = node.GetDisplayNode() if node else None
+            if displayNode:
+                self._applyInPlaneOverlayDisplayStyle(displayNode, channelName=name)
 
-        apex = [origin[0] + (dims[0] - 1) * spacing[0],  # rightmost X
-                origin[1] + (dims[1] - 1) * spacing[1],  # top Y
-                origin[2]                                # Z slice
-            ]
+    def _getRequiredCadProbeToProbeTransform(self):
+        parameterNode = self.getParameterNode()
+        cadProbeToProbe = parameterNode.cadProbeToProbe if parameterNode and parameterNode.cadProbeToProbe else None
+        if not cadProbeToProbe:
+            cadProbeToProbe = self.getFirstNodeByNames([self.CAD_PROBE_TO_PROBE], "vtkMRMLLinearTransformNode")
+        if not cadProbeToProbe:
+            logging.warning(
+                "In-plane overlay is disabled because required CAD probe transform is not selected/found ('%s').",
+                self.CAD_PROBE_TO_PROBE,
+            )
+        return cadProbeToProbe
 
-        # 📐 Use CAD-defined entry angles and depths
-        angles_deg = [44.8, 31.3, 24.1]
-        depths_mm = [45.0, 76.304, 93.166]
+    def _appendDottedLineSegments(self, points, lines, pointId, p1, p2,
+                                  spacing=6.0, segmentLength=4.0,
+                                  extendStart=10.0, extendEnd=80.0):
+        p1 = np.array(p1, dtype=float)
+        p2 = np.array(p2, dtype=float)
+        direction = p2 - p1
+        length = np.linalg.norm(direction)
+        if length <= 1e-6:
+            return pointId
 
-        points = vtk.vtkPoints()
-        lines = vtk.vtkCellArray()
-        pointId = 0
-        scale = 1.0 / 0.189
+        direction = direction / length
+        p1Ext = p1 - direction * extendStart
+        p2Ext = p2 + direction * extendEnd
+        extendedLength = np.linalg.norm(p2Ext - p1Ext)
 
-        for angle_deg, depth in zip(angles_deg, depths_mm):
-            angle_rad = math.radians(angle_deg)
+        t = 0.0
+        while t < extendedLength:
+            start = p1Ext + direction * t
+            end = p1Ext + direction * min(t + segmentLength, extendedLength)
 
-            dx = -depth * math.sin(angle_rad) * scale   # → right
-            dy = -depth * math.cos(angle_rad) * scale  # ↓ down (in image)
-
-            p0 = apex
-            p1 = [apex[0] + dx, apex[1] + dy, apex[2]]
-
-            points.InsertNextPoint(p0)
-            points.InsertNextPoint(p1)
+            points.InsertNextPoint(start.tolist())
+            points.InsertNextPoint(end.tolist())
 
             line = vtk.vtkLine()
             line.GetPointIds().SetId(0, pointId)
             line.GetPointIds().SetId(1, pointId + 1)
             lines.InsertNextCell(line)
+
             pointId += 2
+            t += spacing
+        return pointId
 
-        # 🔧 Create and assign polydata
-        polyData = vtk.vtkPolyData()
-        polyData.SetPoints(points)
-        polyData.SetLines(lines)
-        modelNode.SetAndObservePolyData(polyData)
+    def _applyInPlaneOverlayDisplayStyle(self, displayNode, channelName=None):
+        parameterNode = self.getParameterNode()
+        displayMode = parameterNode.inPlaneDisplayMode if parameterNode.inPlaneDisplayMode else "Projection"
 
-        # 🎨 Display node
-        displayNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelDisplayNode')
-        slicer.mrmlScene.AddNode(displayNode)
-        modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
-        displayNode.SetColor(0.0, 1.0, 0.0)
-        displayNode.SetLineWidth(2)
-        displayNode.VisibilityOn()
-        displayNode.SetSliceIntersectionVisibility(True)
+        displayNode.SetVisibility2D(True)
+        displayNode.SetLineWidth(4)
+        displayNode.SetOpacity(0.9)
+        displayNode.SetSliceIntersectionThickness(3)
+        # Two distinct channel guide colors (study requirement).
+        # Channel1: warm yellow, Channel2: cyan.
+        if channelName and channelName.lower().endswith("channel2"):
+            displayNode.SetColor(0.10, 0.90, 0.95)
+        else:
+            displayNode.SetColor(0.98, 0.86, 0.20)
 
-        # 🔗 Transform to reference space
-        imageToReference = slicer.util.getNode('ImageToReference')
-        if imageToReference:
-            modelNode.SetAndObserveTransformNodeID(imageToReference.GetID())
+        if displayMode == "Intersection":
+            displayNode.SetSliceDisplayModeToIntersection()
+        else:
+            displayNode.SetSliceDisplayModeToProjection()
 
-    def _createInPlaneDepthFanModel(self, modelNode):
-  
-        # Get the ultrasound image node
-        imageNode = slicer.util.getNode('Image_Image')
-        imageData = imageNode.GetImageData()
-        spacing = imageNode.GetSpacing()
-        origin = imageNode.GetOrigin()
-        dims = imageData.GetDimensions()
+    def _createInPlaneDepthLinesModels(self):
+        """Create dotted in-plane channel lines in CADProbeToProbe coordinates (one model per channel)."""
+        channelDefinitions = [
+            ("Channel1", [40.375, -15.363, -0.870], [26.759, -38.103, -0.979]),
+            ("Channel2", [45.193, -13.878, -0.939], [38.849, -34.472, -1.044]),
+        ]
 
-        # Determine the fan apex in IMAGE space:
-        # Apex: 2D origin point from which the curvilinear beams radiate,
-        # located at the center of the top edge of the image.
-        apexX = origin[0] + (dims[0] - 1) / 2.0 * spacing[0]  # center column
-        apexY = origin[1]        # top row (flip Y)
-        apexZ = origin[2]                                    # same slice
+        for name, p1, p2 in channelDefinitions:
+            modelName = f"{self.INPLANE_OVERLAY_MODEL}_{name}"
+            modelNode = self.inPlaneOverlayModelNodes.get(name)
+            if not modelNode:
+                modelNode = None
+                try:
+                    modelNode = slicer.util.getNode(modelName)
+                    if modelNode and not modelNode.IsA("vtkMRMLModelNode"):
+                        modelNode = None
+                except Exception:
+                    modelNode = None
+                if not modelNode:
+                    modelNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelNode", modelName)
+                self.inPlaneOverlayModelNodes[name] = modelNode
 
-        # CAD-defined in-plane channels (depths in mm, angles in degrees)
-        depths_mm = [45.0, 76.304, 93.166]
-        angles_deg = [44.8, 31.3, 24.1]
-        # Lateral offsets of each channel hole from probe midline (in mm)
-        # Adjust these to match your needle guide design
-        channelOffsets_mm = [-10.0, 0.0, 10.0]
+            points = vtk.vtkPoints()
+            lines = vtk.vtkCellArray()
+            self._appendDottedLineSegments(points, lines, 0, p1, p2)
 
-        # Compute calibration scale (mm→image units) from ImageToProbe matrix
-        imageToProbeNode = slicer.util.getNode('ImageToProbe', False) or slicer.util.getNode('ImageToPobe')
-        imageToProbeMatrix = vtk.vtkMatrix4x4()
-        imageToProbeNode.GetMatrixTransformToParent(imageToProbeMatrix)
-        sx = imageToProbeMatrix.GetElement(0,0)
-        sy = imageToProbeMatrix.GetElement(1,1)
-        sz = imageToProbeMatrix.GetElement(2,2)
-        avgScale = (abs(sx) + abs(sy) + abs(sz)) / 3.0
-        mmToImageScale = 1.0 / avgScale
+            polyData = vtk.vtkPolyData()
+            polyData.SetPoints(points)
+            polyData.SetLines(lines)
+            modelNode.SetAndObservePolyData(polyData)
 
-        # Build VTK points and lines for each channel
-        points = vtk.vtkPoints()
-        lines = vtk.vtkCellArray()
-        pointId = 0
-        for offset_mm, depth_mm, angle_deg in zip(channelOffsets_mm, depths_mm, angles_deg):
-            angle_rad = math.radians(angle_deg)
-            # Compute channel start in image space: shift apex laterally
-            offset_image = offset_mm * mmToImageScale
-            p0 = [apexX + offset_image, apexY, apexZ]
-            # Compute channel direction vector (left/right offset already in p0) (left/right offset already in p0)
-            dx = depth_mm * math.sin(angle_rad) * mmToImageScale
-            dy = depth_mm * math.cos(angle_rad) * mmToImageScale
-            p1 = [p0[0] + dx, p0[1] + dy, p0[2]]
-            points.InsertNextPoint(p0)
-            points.InsertNextPoint(p1)
-            line = vtk.vtkLine()
-            line.GetPointIds().SetId(0, pointId)
-            line.GetPointIds().SetId(1, pointId + 1)
-            lines.InsertNextCell(line)
-            pointId += 2
+            displayNode = modelNode.GetDisplayNode()
+            if not displayNode:
+                displayNode = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLModelDisplayNode")
+                modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
+            self._applyInPlaneOverlayDisplayStyle(displayNode, channelName=name)
 
-        # Create polydata and assign to model node
-        polyData = vtk.vtkPolyData()
-        polyData.SetPoints(points)
-        polyData.SetLines(lines)
-        modelNode.SetAndObservePolyData(polyData)
-        polyData = vtk.vtkPolyData()
-        polyData.SetPoints(points)
-        polyData.SetLines(lines)
-        modelNode.SetAndObservePolyData(polyData)
-
-        # Create and configure display node
-        # (after polydata has been assigned to modelNode)
-        displayNode = slicer.mrmlScene.AddNewNodeByClass('vtkMRMLModelDisplayNode')
-        modelNode.SetAndObserveDisplayNodeID(displayNode.GetID())
-
-        # styling
-        displayNode.SetColor(0.0, 1.0, 0.0)
-        displayNode.SetLineWidth(3)
-
-        # --- critical for 2D slice views ---
-        displayNode.SetVisibility2D(True)                          # show in slices :contentReference[oaicite:3]{index=3}
-        displayNode.SetSliceDisplayModeToIntersection()            # draw only intersection lines :contentReference[oaicite:4]{index=4}
-        displayNode.SetSliceIntersectionThickness(2)
-
-        # force all slice views to update and draw intersections
-        for sd in slicer.util.getNodesByClass('vtkMRMLSliceDisplayNode'):
-            sd.SetIntersectingSlicesVisibility(1)
-        for sn in slicer.util.getNodesByClass('vtkMRMLSliceNode'):
-            sn.Modified()
-        # Parent the overlay to the same transform as the image (follows probe motion)
-        parentTransform = imageNode.GetParentTransformNode()
-        if parentTransform:
-            modelNode.SetAndObserveTransformNodeID(parentTransform.GetID())
+        totalSegments = 0
+        for node in self.inPlaneOverlayModelNodes.values():
+            try:
+                pd = node.GetPolyData()
+                if pd and pd.GetLines():
+                    totalSegments += pd.GetLines().GetNumberOfCells()
+            except Exception:
+                pass
+        logging.info(
+            "InPlaneDepthOverlay: rendered %d channels (%d dotted segments) in CADProbeToProbe",
+            len(channelDefinitions),
+            totalSegments,
+        )
 
 
 
@@ -1390,63 +1519,24 @@ class KidneyNavLogic(ScriptedLoadableModuleLogic):
 
 class KidneyNavTest(ScriptedLoadableModuleTest):
     """
-    This is the test case for your scripted module.
-    Uses ScriptedLoadableModuleTest base class, available at:
-    https://github.com/Slicer/Slicer/blob/main/Base/Python/slicer/ScriptedLoadableModule.py
+    Basic smoke test for the KidneyNav module.
+
+    This does not exercise the full reconstruction pipeline (which depends on
+    external OpenIGTLink streams), but ensures that the logic can be instantiated
+    and that core MRML nodes are created without errors.
     """
 
     def setUp(self):
-        """Do whatever is needed to reset the state - typically a scene clear will be enough."""
         slicer.mrmlScene.Clear()
 
     def runTest(self):
-        """Run as few or as many tests as needed here."""
         self.setUp()
-        self.test_KidneyNav1()
+        self.test_KidneyNav_LogicSetup()
 
-    def test_KidneyNav1(self):
-        """Ideally you should have several levels of tests.  At the lowest level
-        tests should exercise the functionality of the logic with different inputs
-        (both valid and invalid).  At higher levels your tests should emulate the
-        way the user would interact with your code and confirm that it still works
-        the way you intended.
-        One of the most important features of the tests is that it should alert other
-        developers when their changes will have an impact on the behavior of your
-        module.  For example, if a developer removes a feature that you depend on,
-        your test should break so they know that the feature is needed.
-        """
-
-        self.delayDisplay("Starting the test")
-
-        # Get/create input data
-
-        import SampleData
-
-        registerSampleData()
-        inputVolume = SampleData.downloadSample("KidneyNav1")
-        self.delayDisplay("Loaded test data set")
-
-        inputScalarRange = inputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(inputScalarRange[0], 0)
-        self.assertEqual(inputScalarRange[1], 695)
-
-        outputVolume = slicer.mrmlScene.AddNewNodeByClass("vtkMRMLScalarVolumeNode")
-        threshold = 100
-
-        # Test the module logic
-
+    def test_KidneyNav_LogicSetup(self):
         logic = KidneyNavLogic()
-
-        # Test algorithm with non-inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, True)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], threshold)
-
-        # Test algorithm with inverted threshold
-        logic.process(inputVolume, outputVolume, threshold, False)
-        outputScalarRange = outputVolume.GetImageData().GetScalarRange()
-        self.assertEqual(outputScalarRange[0], inputScalarRange[0])
-        self.assertEqual(outputScalarRange[1], inputScalarRange[1])
-
-        self.delayDisplay("Test passed")
+        logic.setup()
+        parameterNode = logic.getParameterNode()
+        self.assertIsNotNone(parameterNode.inputVolume)
+        self.assertIsNotNone(parameterNode.predictionVolume)
+        self.assertIsNotNone(parameterNode.reconstructorNode)
